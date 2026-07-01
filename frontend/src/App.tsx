@@ -5,6 +5,7 @@ import {
   getAreaSummary,
   getAreas,
   getCachedExposure,
+  getFlowIndicators,
   getTileManifest,
   getCurrentWeather,
   getForecastWeather,
@@ -17,15 +18,16 @@ import {
   submitFeedback,
 } from "./api/client";
 import { filterMapResults } from "./lib/mapFeatures";
-import { canUseTileMode, tileDirectionsFromManifest } from "./lib/tiles";
+import { canUseTileMode, flowTilesReady, tileDirectionsFromManifest } from "./lib/tiles";
 import { normalizeDirectionDeg, roundSpeedMs, snapDirection } from "./lib/wind";
-import type { Area, DataQuality, FeatureResult, TileManifest, Weather } from "./api/schemas";
+import type { Area, DataQuality, FeatureResult, FlowIndicator, TileManifest, Weather } from "./api/schemas";
 import { DataQualityPanel } from "./components/DataQualityPanel";
 import { ValidationPanel } from "./components/ValidationPanel";
 import { ExplanationPanel } from "./components/ExplanationPanel";
 import { LayerMenu } from "./components/LayerMenu";
 import { Legend } from "./components/Legend";
 import { MapView } from "./components/MapView";
+import { WindFlowOverlay } from "./components/WindFlowOverlay";
 import { WindControls } from "./components/WindControls";
 
 type WindMode = "manual" | "current_weather" | "forecast";
@@ -45,7 +47,14 @@ export default function App() {
   const [, setScenarioId] = useState<number | null>(null);
   const [results, setResults] = useState<FeatureResult[]>([]);
   const [vectorZones, setVectorZones] = useState<
-    { id: number; name: string; zone_type: string; status: string; boundary: GeoJSON.Geometry }[]
+    {
+      id: number;
+      name: string;
+      zone_type: string;
+      status: string;
+      vector_field_available: boolean;
+      boundary: GeoJSON.Geometry;
+    }[]
   >([]);
   const [selected, setSelected] = useState<FeatureResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -54,6 +63,8 @@ export default function App() {
   const [showSpecial, setShowSpecial] = useState(true);
   const [showGust, setShowGust] = useState(false);
   const [showBuildingExposure, setShowBuildingExposure] = useState(false);
+  const [showFlowInterpretation, setShowFlowInterpretation] = useState(false);
+  const [flowIndicators, setFlowIndicators] = useState<FlowIndicator[]>([]);
   const [showVectorZones, setShowVectorZones] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
   const [areaMetaReady, setAreaMetaReady] = useState(false);
@@ -359,6 +370,22 @@ export default function App() {
     void loadExposure(mode === "manual" ? "manual" : mode, forecastHour, false);
   }, [cacheReady, areaMetaReady]); // eslint-disable-line react-hooks/exhaustive-deps -- reload once when cache becomes ready
 
+  const useFlowTileLayer = useTileLayers && flowTilesReady(tileManifest, tileDirection);
+
+  useEffect(() => {
+    if (!area || !cacheReady || !showFlowInterpretation || useFlowTileLayer) {
+      setFlowIndicators([]);
+      return;
+    }
+    let cancelled = false;
+    void getFlowIndicators(area.slug, direction, speed, windGustMs)
+      .then((rows) => { if (!cancelled) setFlowIndicators(rows); })
+      .catch(() => { if (!cancelled) setFlowIndicators([]); });
+    return () => { cancelled = true; };
+  }, [area, cacheReady, showFlowInterpretation, direction, speed, windGustMs, useFlowTileLayer]);
+
+  const vectorFieldAvailable = vectorZones.some((z) => z.vector_field_available);
+
   const handleRunValidation = async () => {
     if (!area) return;
     setValidationLoading(true);
@@ -476,12 +503,15 @@ export default function App() {
           showSpecial={showSpecial}
           showGust={showGust}
           showBuildingExposure={showBuildingExposure}
+          showFlowInterpretation={showFlowInterpretation}
+          vectorFieldAvailable={vectorFieldAvailable}
           showVectorZones={showVectorZones}
           showLabels={showLabels}
           onToggleConfidence={() => setShowConfidence((v) => !v)}
           onToggleSpecial={() => setShowSpecial((v) => !v)}
           onToggleGust={() => setShowGust((v) => !v)}
           onToggleBuildingExposure={() => setShowBuildingExposure((v) => !v)}
+          onToggleFlowInterpretation={() => setShowFlowInterpretation((v) => !v)}
           onToggleVectorZones={() => setShowVectorZones((v) => !v)}
           onToggleLabels={() => setShowLabels((v) => !v)}
         />
@@ -509,27 +539,40 @@ export default function App() {
         />
       )}
       {area && (
-        <MapView
-          center={[area.center_lon, area.center_lat]}
-          zoom={area.default_zoom}
-          areaSlug={area.slug}
-          results={filterMapResults(results)}
-          vectorZones={vectorZones}
-          showConfidence={showConfidence}
-          showSpecial={showSpecial}
-          showGust={showGust}
-          showBuildingExposure={showBuildingExposure}
-          showVectorZones={showVectorZones}
-          showLabels={showLabels}
-          useTileLayers={useTileLayers}
-          tileDirection={tileDirection}
-          tileBaseReady={tileManifest?.base_pmtiles ?? false}
-          selectedId={selected?.feature_id ?? null}
-          onSelect={setSelected}
-        />
+        <div className="map-wrap">
+          <MapView
+            center={[area.center_lon, area.center_lat]}
+            zoom={area.default_zoom}
+            areaSlug={area.slug}
+            results={filterMapResults(results)}
+            vectorZones={vectorZones}
+            showConfidence={showConfidence}
+            showSpecial={showSpecial}
+            showGust={showGust}
+            showBuildingExposure={showBuildingExposure}
+            showFlowInterpretation={showFlowInterpretation}
+            flowIndicators={flowIndicators}
+            showVectorZones={showVectorZones}
+            showLabels={showLabels}
+            useTileLayers={useTileLayers}
+            tileDirection={tileDirection}
+            tileBaseReady={tileManifest?.base_pmtiles ?? false}
+            flowTilesReady={useFlowTileLayer}
+            selectedId={selected?.feature_id ?? null}
+            onSelect={setSelected}
+          />
+          <WindFlowOverlay
+            direction={direction}
+            speed={speed}
+            gustMs={windGustMs}
+            cacheDirection={cacheDirection}
+            visible={showFlowInterpretation}
+          />
+        </div>
       )}
       <ExplanationPanel
         feature={selected}
+        windDirectionDeg={direction}
         onClose={() => setSelected(null)}
         onReport={handleReport}
       />

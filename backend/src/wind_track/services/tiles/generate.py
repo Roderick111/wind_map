@@ -11,9 +11,18 @@ from typing import Any
 from wind_track.config.settings import settings
 from wind_track.db.connection import fetch_all, get_db, loads_json
 from wind_track.services.directional_cache import list_cached_directions
+from wind_track.services.flow_indicators import build_indicators_for_feature
 from wind_track.services.progress import log_step
 from wind_track.services.scenarios import get_active_versions
 from wind_track.services.scoring.config import DEFAULT_SCALAR_CONFIG, exposure_class_for_score
+
+FLOW_SYMBOLS = {
+    "corridor_arrow": "▸",
+    "river_corridor_arrow": "▸",
+    "bridge_crosswind": "⚠",
+    "open_exit_transition": "△",
+    "model_limited": "◆",
+}
 
 BASE_FEATURE_TYPES = frozenset({
     "street_segment", "bridge", "quay", "river", "building", "open_space", "park", "vegetation",
@@ -29,14 +38,19 @@ def tile_manifest(area_slug: str) -> dict[str, Any]:
     root = tiles_dir_for(area_slug)
     base = root / "base.pmtiles"
     exposure: dict[str, bool] = {}
+    flow: dict[str, bool] = {}
     if root.exists():
         for path in sorted(root.glob("exposure_*.pmtiles")):
             deg = path.stem.replace("exposure_", "")
             exposure[deg] = True
+        for path in sorted(root.glob("flow_*.pmtiles")):
+            deg = path.stem.replace("flow_", "")
+            flow[deg] = True
     return {
         "ready": base.exists() and len(exposure) > 0,
         "base_pmtiles": base.exists(),
         "exposure_pmtiles": exposure,
+        "flow_pmtiles": flow,
         "tiles_path": str(root),
         "tippecanoe_available": shutil.which("tippecanoe") is not None,
     }
@@ -146,6 +160,73 @@ async def _export_exposure_features(
     return features
 
 
+async def _export_flow_features(
+    area_slug: str,
+    direction_deg: int,
+) -> list[dict[str, Any]]:
+    versions = await get_active_versions(area_slug)
+    if not versions or not versions["data_version"] or not versions["model_version"]:
+        return []
+    area = versions["area"]
+    data_version = versions["data_version"]
+    model_version = versions["model_version"]
+    config = loads_json(model_version["config_json"], DEFAULT_SCALAR_CONFIG)
+
+    async with get_db() as conn:
+        rows = await fetch_all(
+            conn,
+            """SELECT c.normalized_risk_score, c.confidence, c.cause_tags_json, c.subscores_json,
+                      f.id, f.feature_type, f.geom, m.handling_mode, m.corridor_orientation_deg
+               FROM directional_score_cache c
+               JOIN spatial_features f ON f.id = c.feature_id
+               JOIN computed_feature_metrics m
+                 ON m.feature_id = f.id AND m.data_version_id = c.data_version_id
+               WHERE c.area_id = ? AND c.data_version_id = ? AND c.model_version_id = ?
+                 AND c.direction_deg = ?""",
+            (area["id"], data_version["id"], model_version["id"], direction_deg),
+        )
+
+    features: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for row in rows:
+        cause_tags = loads_json(row.get("cause_tags_json"), [])
+        subscores = loads_json(row.get("subscores_json"), {})
+        risk = row["normalized_risk_score"]
+        exposure = exposure_class_for_score(risk, config)
+        feat = {
+            "feature_id": row["id"],
+            "feature_type": row["feature_type"],
+            "geom": loads_json(row["geom"], {}),
+            "risk_score": risk,
+            "exposure_class": exposure,
+            "confidence": row["confidence"],
+            "handling_mode": row["handling_mode"],
+            "cause_tags": cause_tags,
+            "subscores": subscores,
+            "corridor_orientation_deg": row.get("corridor_orientation_deg"),
+        }
+        for ind in build_indicators_for_feature(feat, float(direction_deg)):
+            key = (ind["feature_id"], ind["indicator_type"])
+            if key in seen:
+                continue
+            seen.add(key)
+            itype = ind["indicator_type"]
+            features.append({
+                "type": "Feature",
+                "geometry": ind["geom"],
+                "properties": {
+                    "feature_id": ind["feature_id"],
+                    "indicator_type": itype,
+                    "flow_direction_deg": ind["flow_direction_deg"],
+                    "flow_strength": ind["flow_strength"],
+                    "confidence": ind["confidence"],
+                    "exposure_class": ind["exposure_class"],
+                    "symbol": FLOW_SYMBOLS.get(itype, "▸"),
+                },
+            })
+    return features
+
+
 async def generate_area_tiles(
     area_slug: str,
     directions: list[int] | None = None,
@@ -172,6 +253,8 @@ async def generate_area_tiles(
 
     exposure_built: dict[str, bool] = {}
     exposure_counts: dict[str, int] = {}
+    flow_built: dict[str, bool] = {}
+    flow_counts: dict[str, int] = {}
     for idx, deg in enumerate(dirs):
         log_step("exporting exposure tiles", direction=deg, progress=f"{idx + 1}/{len(dirs)}")
         feats = await _export_exposure_features(area_slug, deg)
@@ -181,6 +264,14 @@ async def generate_area_tiles(
         log_step("running tippecanoe", layer=f"exposure_{deg}", features=len(feats))
         exposure_built[str(deg)] = _run_tippecanoe(ndjson, out, layer="exposure")
 
+        log_step("exporting flow tiles", direction=deg)
+        flow_feats = await _export_flow_features(area_slug, deg)
+        flow_ndjson = root / f"flow_{deg}.ndjson"
+        flow_counts[str(deg)] = _write_ndjson(flow_ndjson, flow_feats)
+        flow_out = root / f"flow_{deg}.pmtiles"
+        log_step("running tippecanoe", layer=f"flow_{deg}", features=len(flow_feats))
+        flow_built[str(deg)] = _run_tippecanoe(flow_ndjson, flow_out, layer="flow")
+
     manifest = tile_manifest(area_slug)
     return {
         "area_slug": area_slug,
@@ -188,6 +279,8 @@ async def generate_area_tiles(
         "base_pmtiles": base_built,
         "exposure_counts": exposure_counts,
         "exposure_pmtiles": exposure_built,
+        "flow_counts": flow_counts,
+        "flow_pmtiles": flow_built,
         "tippecanoe_available": manifest["tippecanoe_available"],
         "ready": manifest["ready"],
     }

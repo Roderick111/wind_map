@@ -115,6 +115,17 @@ async def test_scalar_rejected_when_cache_ready_and_area_large(
 
 
 @pytest.mark.asyncio
+async def test_flow_indicators_endpoint(client_with_cache: AsyncClient):
+    resp = await client_with_cache.get(
+        "/areas/synthetic_test/flow",
+        params={"direction_deg": 90, "wind_speed_ms": 8},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data, list)
+
+
+@pytest.mark.asyncio
 async def test_area_summary_cache_fields(client: AsyncClient):
     areas = (await client.get("/areas")).json()
     area = next(a for a in areas if a["slug"] == "synthetic_test")

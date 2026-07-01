@@ -8,6 +8,7 @@ from wind_track.services.geo import alignment_score
 from wind_track.services.scoring.config import DEFAULT_SCALAR_CONFIG, exposure_class_for_score
 from wind_track.services.scoring.gust import gust_risk_boost, weather_gust_elevated
 from wind_track.services.scoring.special_rules import apply_special_rules
+from wind_track.services.terrain.score import terrain_multiplier_and_tags
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -28,8 +29,6 @@ def compute_subscores(
     hw = metrics.get("hw_ratio") or 1.0
     enclosure = metrics.get("enclosure_ratio") or 0.5
     vegetation = metrics.get("vegetation_density") or 0.0
-    slope = metrics.get("slope_deg") or 0.0
-
     align = alignment_score(wind_direction_deg, orientation)
     m_align = clamp(
         mult["alignment"]["min"] + align * (mult["alignment"]["max"] - mult["alignment"]["min"]),
@@ -53,9 +52,7 @@ def compute_subscores(
     m_shield = clamp(0.5 + enclosure * 0.5, mult["shielding"]["min"], mult["shielding"]["max"])
     m_veg = clamp(1.0 - vegetation * 0.3, mult["vegetation"]["min"], mult["vegetation"]["max"])
 
-    aspect = metrics.get("slope_aspect_deg") or 0.0
-    windward = abs((wind_direction_deg - aspect + 180) % 360 - 180) < 45
-    m_terrain = clamp(1.3 if windward and slope > 3 else 0.9, mult["terrain"]["min"], mult["terrain"]["max"])
+    m_terrain, _terrain_tags = terrain_multiplier_and_tags(metrics, wind_direction_deg, mult["terrain"])
 
     data_conf = metrics.get("metric_confidence") or 0.7
     model_conf = 0.8 if metrics.get("handling_mode") == "normal_score" else 0.55
@@ -136,6 +133,10 @@ def score_feature(
     confidence = clamp((data_conf + model_conf) / 2 - special["confidence_penalty"], 0.1, 0.95)
 
     cause_tags = list(special["cause_tags"])
+    _, terrain_tags = terrain_multiplier_and_tags(metrics, wind_direction_deg, cfg["multipliers"]["terrain"])
+    for tag in terrain_tags:
+        if tag not in cause_tags:
+            cause_tags.append(tag)
     if subscores["directional_alignment"] > 0.7:
         cause_tags.append("wind_aligned_corridor")
     if (metrics.get("hw_ratio") or 0) > 1.5:

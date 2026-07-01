@@ -16,3 +16,11 @@ export function canUseTileMode(
   if (dirs.length === 0) return false;
   return tilesReady || Boolean(manifest?.ready);
 }
+
+export function flowTilesReady(
+  manifest: TileManifest | null,
+  direction: number | null,
+): boolean {
+  if (!manifest || direction == null) return false;
+  return Boolean(manifest.flow_pmtiles?.[String(direction)]);
+}

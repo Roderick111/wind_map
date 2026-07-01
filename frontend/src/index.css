@@ -91,6 +91,7 @@ input[type="range"] { width: 100%; }
 
 .layer-title { font-weight: 600; font-size: 0.85rem; }
 .layer-menu label { flex-direction: row; align-items: center; gap: 0.5rem; }
+.layer-menu .layer-disabled { opacity: 0.55; cursor: not-allowed; }
 
 .live-wind {
   margin: 0;
@@ -146,12 +147,71 @@ input[type="range"] { width: 100%; }
   color: #fef3c7;
 }
 
-.map-container {
+.map-wrap {
   grid-column: 2;
   grid-row: 2;
+  position: relative;
+  min-height: 0;
+  height: 100%;
+}
+
+.map-container {
   width: 100%;
   min-height: 0;
   height: 100%;
+}
+
+.wind-flow-overlay {
+  position: absolute;
+  top: 12px;
+  right: 56px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid #475569;
+  border-radius: 8px;
+  pointer-events: none;
+  max-width: 220px;
+}
+
+.wind-flow-compass {
+  font-size: 1.6rem;
+  line-height: 1;
+  color: #93c5fd;
+  font-weight: 700;
+}
+
+.wind-flow-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 0.75rem;
+  color: #cbd5e1;
+}
+
+.wind-flow-label strong {
+  font-size: 0.85rem;
+  color: #f8fafc;
+}
+
+.wind-flow-gust,
+.wind-flow-snap {
+  color: #a5b4fc;
+  font-size: 0.7rem;
+}
+
+.wind-flow-disclaimer {
+  display: none;
+}
+
+.flow-summary {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #cbd5e1;
+  line-height: 1.45;
 }
 
 .legend {

@@ -28,6 +28,7 @@ class TileManifestResponse(BaseModel):
     ready: bool
     base_pmtiles: bool
     exposure_pmtiles: dict[str, bool]
+    flow_pmtiles: dict[str, bool] = Field(default_factory=dict)
     tippecanoe_available: bool
     tiles_path: str
 
@@ -135,3 +136,16 @@ class ValidationMetricsResponse(BaseModel):
     adjacent_class_accuracy: float
     false_negative_rate: float | None
     metrics_json: dict[str, Any]
+
+
+class FlowIndicatorResponse(BaseModel):
+    feature_id: int
+    indicator_type: str
+    geom: dict[str, Any]
+    flow_direction_deg: float
+    flow_strength: float
+    confidence: float
+    exposure_class: str
+    reason: str
+    source: str
+    feature_type: str

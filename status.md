@@ -15,6 +15,9 @@ make enrich-heights # BD TOPO + neighborhood median + quay promotion
 make validate       # seed + run Presqu'île sanity validation
 make pipeline-lyon  # full Lyon: import → enrich → zones → 16-dir → tiles → audit
 make generate-tiles AREA=lyon_full DIRECTIONS=16
+make import-dem AREA=pilot_presquile          # DEM + slope metrics
+make import-dem AREA=lyon_full FORCE=1        # fetch Lyon elevation grid
+make import-dem AREA=lyon_full RECOMPUTE=1  # DEM + refresh directional cache
 make audit AREA=lyon_full
 ```
 
@@ -98,7 +101,8 @@ Dev data persists in `data/wind_track.db`.
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /areas/{slug}/exposure?wind_gust_ms=` | Cached exposure with gust scaling |
-| `GET /areas/{slug}/tiles` | PMTiles manifest |
+| `GET /areas/{slug}/tiles` | PMTiles manifest (exposure + flow) |
+| `GET /areas/{slug}/flow` | Scalar flow interpretation indicators |
 | `GET /areas/{id}/data-quality` | Official / estimated / fallback height tiers |
 | `POST /scenarios/scalar` | Live scoring (409 for large cached areas) |
 | `POST /validation/seed` | Seed sanity case |
@@ -123,21 +127,37 @@ Dev data persists in `data/wind_track.db`.
 | Explanation + vector disclaimer | Done |
 | About accuracy section | Partial — inline in app, not dedicated page |
 | Feedback button | Partial — API wired, minimal UI |
+| **Flow interpretation** — compass + corridor/bridge/quay arrows | Done |
+| **Likely flow** explanation section | Done |
+| **Flow PMTiles** — `flow_{direction}.pmtiles` in tile generation | Done — regenerate tiles to build |
+| **Vector field animation hook** — disabled until metadata exists | Done |
+| **Selected-feature flow context** — dim unrelated arrows | Done |
+
+### Terrain (Phase C)
+
+| Item | Status |
+|------|--------|
+| DEM import via Open-Meteo elevation API | Done — `make import-dem` |
+| Cached grid `data/dem/{slug}.json` | Done |
+| Slope / aspect / relative elevation at centroids | Done |
+| Terrain subscore (`exposed_slope`, `lee_shelter`, `ridge_exposure`, `valley_channeling`) | Done |
+| `terrain_class` ridge/valley/flat on slope zones | Done |
 
 ### Quality
 
-- **57 backend tests** passing
+- **64 backend tests** passing
 - Frontend build in `make test`
 
 ---
 
 ## Not yet implemented
 
-1. **DEM / terrain** — slope zones seeded; real DEM metrics still placeholders
-2. **BDNB / Grand Lyon 3D** — BD TOPO chosen as primary; alternatives not wired
-3. **Deploy** to staging
-4. **URock / vector-field generation** — zones marked scalar-limited only
-5. **Dedicated About accuracy page** + feedback UI polish
+1. **BDNB / Grand Lyon 3D** — BD TOPO chosen as primary; alternatives not wired
+2. **Deploy** to staging
+3. **URock / vector-field generation** — zones marked scalar-limited only; animation hook ready
+4. **Analytics export** (`make export-analytics`) — Phase 3 of current-state plan
+5. **Pedestrian impact layer** — Phase 8 of current-state plan
+6. **Dedicated About accuracy page** polish + feedback UI polish
 
 ---
 
@@ -148,7 +168,8 @@ Dev data persists in `data/wind_track.db`.
 - ~75 Presqu'île buildings still on `fallback_default` (BD TOPO centroid miss)
 - ~8% Lyon buildings on fallback height
 - Validation is manual sanity screening, not certified field truth
-- Hills/slopes scored without real DEM — terrain subscore is weak
+- Lyon DEM not applied until `make import-dem AREA=lyon_full` — hill scores use geometry until then
+- Flow arrows on Lyon require `make generate-tiles` rerun to build `flow_*.pmtiles`
 - Building exposure in tile mode can be heavy — off by default
 
 ---
@@ -192,15 +213,26 @@ Ordered by dependency — see [docs/plans/2026-07-01-v05-implementation-plan.md]
 
 **Tiles built:** `data/tiles/pilot_presquile/` (8 exposure + base), `data/tiles/lyon_full/` (16 exposure + base).
 
-### Phase C — Terrain (M8 spike → metrics)
+### Phase C — Terrain (M8 spike → metrics) — done
 
 **Goal:** Real slope/ridge/valley modifiers for hills.
 
-- [ ] DEM import spike (IGN/RGE ALTI or equivalent)
-- [ ] `slope_zone` / `ridge_zone` generation for Fourvière, Croix-Rousse
-- [ ] Wire terrain subscore (currently placeholder)
+- [x] DEM import via Open-Meteo elevation API (`make import-dem`)
+- [x] Slope/aspect/relative elevation sampled at feature centroids
+- [x] Terrain subscore wired with `exposed_slope` / `lee_shelter` / `ridge_exposure` / `valley_channeling`
+- [x] `terrain_class` on slope zones (ridge/valley/flat)
 
-**Exit:** Hill/quay transition areas score differently with `exposed_slope` / `lee_shelter` tags.
+**Exit:** Hill areas score differently by wind direction after DEM import + optional `RECOMPUTE=1`.
+
+### Phase C½ — Wind flow UI (vision plan) — done for v0.5 scalar mode
+
+- [x] Backend `flow_indicators` service + `GET /areas/{slug}/flow`
+- [x] Flow interpretation layer toggle + global wind compass
+- [x] Corridor / bridge / quay / transition / model-limited markers
+- [x] Explanation panel **Likely flow** section
+- [x] Flow PMTiles generation (`flow_{direction}.pmtiles`)
+- [x] Selected-feature arrow emphasis (dim unrelated)
+- [x] Vector field animation hook (disabled until `vector_field_metadata` exists)
 
 ### Phase D — Vector zones polish (M10)
 

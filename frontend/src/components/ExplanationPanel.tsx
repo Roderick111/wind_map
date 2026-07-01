@@ -1,14 +1,17 @@
 import type { FeatureResult } from "../api/schemas";
 import { exposureColor, formatExposureClass } from "../lib/exposure";
+import { likelyFlowSummary } from "../lib/flowInterpretation";
 
 type Props = {
   feature: FeatureResult | null;
+  windDirectionDeg: number;
   onClose: () => void;
   onReport: () => void;
 };
 
-export function ExplanationPanel({ feature, onClose, onReport }: Props) {
+export function ExplanationPanel({ feature, windDirectionDeg, onClose, onReport }: Props) {
   if (!feature) return null;
+  const flowText = likelyFlowSummary(feature, windDirectionDeg);
 
   return (
     <aside className="explanation-panel">
@@ -34,6 +37,12 @@ export function ExplanationPanel({ feature, onClose, onReport }: Props) {
         <p className="vector-note">
           Scalar screening only here — advanced vector model preferred for reliable local flow.
         </p>
+      )}
+      {flowText && (
+        <section>
+          <h3>Likely flow</h3>
+          <p className="flow-summary">{flowText}</p>
+        </section>
       )}
       {feature.cause_tags.length > 0 && (
         <section>

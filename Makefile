@@ -1,4 +1,4 @@
-.PHONY: dev test setup db-migrate seed import-osm enrich-heights validate compute-metrics precompute-directions generate-tiles audit pipeline backend frontend
+.PHONY: dev test setup db-migrate seed import-osm import-dem enrich-heights validate compute-metrics precompute-directions generate-tiles audit pipeline backend frontend
 
 # One-time (or after schema change): migrate + import OSM if missing
 setup:
@@ -35,6 +35,9 @@ precompute-directions:
 
 enrich-heights:
 	cd backend && uv run wind-track-enrich-heights $(or $(AREA),pilot_presquile)
+
+import-dem:
+	cd backend && uv run wind-track-import-dem $(or $(AREA),pilot_presquile) $(if $(FORCE),--force,) $(if $(RECOMPUTE),--recompute,)
 
 validate:
 	cd backend && uv run wind-track-validate $(or $(AREA),pilot_presquile)

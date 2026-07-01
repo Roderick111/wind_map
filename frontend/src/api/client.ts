@@ -3,11 +3,12 @@ import {
   DataQualitySchema,
   TileManifestSchema,
   FeatureResultSchema,
+  FlowIndicatorSchema,
   ScenarioSchema,
   WeatherSchema,
 } from "./schemas";
 import { normalizeDirectionDeg } from "../lib/wind";
-import type { Area, DataQuality, FeatureResult, Scenario, TileManifest, Weather } from "./schemas";
+import type { Area, DataQuality, FeatureResult, FlowIndicator, Scenario, TileManifest, Weather } from "./schemas";
 
 const BASE = "/api";
 
@@ -37,6 +38,23 @@ export async function getAreaSummary(areaId: number): Promise<{
 export async function getTileManifest(areaSlug: string): Promise<TileManifest> {
   const data = await fetchJson<unknown>(`${BASE}/areas/${areaSlug}/tiles`);
   return TileManifestSchema.parse(data);
+}
+
+export async function getFlowIndicators(
+  areaSlug: string,
+  directionDeg: number,
+  windSpeedMs: number,
+  windGustMs?: number | null,
+): Promise<FlowIndicator[]> {
+  const params = new URLSearchParams({
+    direction_deg: String(normalizeDirectionDeg(directionDeg)),
+    wind_speed_ms: String(windSpeedMs),
+  });
+  if (windGustMs != null && windGustMs > 0) {
+    params.set("wind_gust_ms", String(windGustMs));
+  }
+  const data = await fetchJson<unknown[]>(`${BASE}/areas/${areaSlug}/flow?${params}`);
+  return data.map((row) => FlowIndicatorSchema.parse(row));
 }
 
 export async function getCachedExposure(
@@ -118,7 +136,14 @@ export async function refreshWeather(areaId: number): Promise<void> {
 
 export async function getAreaLayers(areaId: number): Promise<{
   features: { id: number; feature_type: string; name: string | null; geom: GeoJSON.Geometry }[];
-  vector_zones: { id: number; name: string; zone_type: string; status: string; boundary: GeoJSON.Geometry }[];
+  vector_zones: {
+    id: number;
+    name: string;
+    zone_type: string;
+    status: string;
+    vector_field_available: boolean;
+    boundary: GeoJSON.Geometry;
+  }[];
 }> {
   return fetchJson(`${BASE}/areas/${areaId}/layers`);
 }

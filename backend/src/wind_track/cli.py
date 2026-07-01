@@ -16,6 +16,7 @@ from wind_track.services.pipeline import run_area_pipeline
 from wind_track.services.precompute import precompute_directions as run_precompute
 from wind_track.services.quality_audit import run_quality_audit
 from wind_track.services.seed import seed_database
+from wind_track.services.terrain.apply import apply_dem_metrics
 from wind_track.services.tiles.generate import generate_area_tiles
 from wind_track.services.validation.run import run_validation_case, seed_presquile_validation_case
 
@@ -111,6 +112,17 @@ def generate_tiles() -> None:
     area = argv[0] if argv else "pilot_presquile"
     dirs = direction_set(dir_count)
     result = asyncio.run(generate_area_tiles(area, directions=dirs))
+    print(json.dumps(result, indent=2))
+
+
+def import_dem() -> None:
+    argv = [a for a in sys.argv[1:] if a not in ("--force", "--recompute")]
+    force = "--force" in sys.argv[1:]
+    recompute = "--recompute" in sys.argv[1:]
+    area = argv[0] if argv else "pilot_presquile"
+    result = asyncio.run(
+        apply_dem_metrics(area, force_fetch=force, recompute_precompute=recompute),
+    )
     print(json.dumps(result, indent=2))
 
 

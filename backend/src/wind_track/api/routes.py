@@ -14,6 +14,7 @@ from wind_track.models.schemas import (
     DataQualityResponse,
     TileManifestResponse,
     FeatureResultResponse,
+    FlowIndicatorResponse,
     FeedbackRequest,
     FeedbackResponse,
     HealthResponse,
@@ -25,6 +26,7 @@ from wind_track.models.schemas import (
     WeatherResponse,
 )
 from wind_track.services.directional_cache import cache_status, get_cached_exposure
+from wind_track.services.flow_indicators import get_flow_indicators
 from wind_track.services.tiles.generate import tile_manifest
 from wind_track.services.precompute import precompute_directions
 from wind_track.services.validation.run import run_validation_case, seed_presquile_validation_case
@@ -142,6 +144,33 @@ async def cached_exposure(
     return [FeatureResultResponse(**r) for r in results]
 
 
+@router.get("/areas/{area_slug}/flow", response_model=list[FlowIndicatorResponse])
+async def area_flow_indicators(
+    area_slug: str,
+    direction_deg: float = Query(..., ge=0, lt=360),
+    wind_speed_ms: float = Query(8.0, ge=0, le=40),
+    wind_gust_ms: float | None = Query(None, ge=0, le=60),
+    bbox: str | None = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
+) -> list[FlowIndicatorResponse]:
+    """Scalar flow interpretation indicators for map overlay."""
+    parsed_bbox = None
+    if bbox:
+        parts = [float(x.strip()) for x in bbox.split(",")]
+        if len(parts) == 4:
+            parsed_bbox = (parts[0], parts[1], parts[2], parts[3])
+    indicators = await get_flow_indicators(
+        area_slug, direction_deg, wind_speed_ms, wind_gust_ms, parsed_bbox,
+    )
+    if not indicators:
+        status = await cache_status(area_slug)
+        if not status.get("ready"):
+            raise HTTPException(
+                404,
+                "Directional cache not ready — run: make precompute-directions",
+            )
+    return [FlowIndicatorResponse(**ind) for ind in indicators]
+
+
 @router.get("/areas/{area_slug}/cache-status")
 async def directional_cache_status(area_slug: str) -> dict[str, Any]:
     return await cache_status(area_slug)
@@ -241,7 +270,12 @@ async def area_layers(area_id: int) -> dict[str, Any]:
         )
         vector_zones = await fetch_all(
             conn,
-            "SELECT id, name, zone_type, boundary_geom, status FROM vector_zones WHERE area_id = ?",
+            """SELECT vz.id, vz.name, vz.zone_type, vz.boundary_geom, vz.status,
+                      EXISTS(
+                        SELECT 1 FROM vector_field_metadata vfm
+                        WHERE vfm.vector_zone_id = vz.id
+                      ) AS vector_field_available
+               FROM vector_zones vz WHERE vz.area_id = ?""",
             (area_id,),
         )
         return {
@@ -260,6 +294,7 @@ async def area_layers(area_id: int) -> dict[str, Any]:
                     "name": vz["name"],
                     "zone_type": vz["zone_type"],
                     "status": vz["status"],
+                    "vector_field_available": bool(vz.get("vector_field_available")),
                     "boundary": json.loads(vz["boundary_geom"]),
                 }
                 for vz in vector_zones

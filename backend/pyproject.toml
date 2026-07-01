@@ -29,6 +29,7 @@ wind-track-validate = "wind_track.cli:validate"
 wind-track-audit = "wind_track.cli:audit"
 wind-track-generate-tiles = "wind_track.cli:generate_tiles"
 wind-track-pipeline = "wind_track.cli:pipeline"
+wind-track-import-dem = "wind_track.cli:import_dem"
 
 [build-system]
 requires = ["hatchling"]

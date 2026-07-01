@@ -167,7 +167,7 @@ def _score_slope(
         "cause_tags": tags,
         "mitigation_tags": [],
         "model_note": "Terrain modifier from slope aspect relative to wind.",
-        "limitations": ["DEM placeholder — slope metrics may be approximate."],
+        "limitations": ["Steep urban/building interaction may need vector modeling."],
         "confidence_penalty": 0.15,
         "gust_sensitive": windward,
     }

@@ -3,12 +3,15 @@ type Props = {
   showSpecial: boolean;
   showGust: boolean;
   showBuildingExposure: boolean;
+  showFlowInterpretation: boolean;
+  vectorFieldAvailable: boolean;
   showVectorZones: boolean;
   showLabels: boolean;
   onToggleConfidence: () => void;
   onToggleSpecial: () => void;
   onToggleGust: () => void;
   onToggleBuildingExposure: () => void;
+  onToggleFlowInterpretation: () => void;
   onToggleVectorZones: () => void;
   onToggleLabels: () => void;
 };
@@ -18,18 +21,25 @@ export function LayerMenu({
   showSpecial,
   showGust,
   showBuildingExposure,
+  showFlowInterpretation,
+  vectorFieldAvailable,
   showVectorZones,
   showLabels,
   onToggleConfidence,
   onToggleSpecial,
   onToggleGust,
   onToggleBuildingExposure,
+  onToggleFlowInterpretation,
   onToggleVectorZones,
   onToggleLabels,
 }: Props) {
   return (
     <div className="layer-menu">
       <span className="layer-title">Layers</span>
+      <label><input type="checkbox" checked={showFlowInterpretation} onChange={onToggleFlowInterpretation} /> Flow interpretation</label>
+      <label className="layer-disabled" title={vectorFieldAvailable ? "Vector field data loaded" : "No vector field data yet — scalar flow only"}>
+        <input type="checkbox" disabled checked={false} /> Vector field animation
+      </label>
       <label><input type="checkbox" checked={showBuildingExposure} onChange={onToggleBuildingExposure} /> Building exposure</label>
       <label><input type="checkbox" checked={showConfidence} onChange={onToggleConfidence} /> Confidence</label>
       <label><input type="checkbox" checked={showSpecial} onChange={onToggleSpecial} /> Special geometry</label>

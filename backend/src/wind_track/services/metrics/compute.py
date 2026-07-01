@@ -61,6 +61,7 @@ def compute_metrics_for_feature(
         "slope_deg": props.get("slope_deg", 0.0),
         "slope_aspect_deg": props.get("slope_aspect_deg", 0.0),
         "relative_elevation_m": props.get("relative_elevation_m", 0.0),
+        "terrain_class": props.get("terrain_class", "flat"),
         "nearby_highrise_score": props.get("nearby_highrise_score", 0.0),
         "special_geometry_type": props.get("special_geometry_type"),
         "metric_confidence": props.get("metric_confidence", 0.75),

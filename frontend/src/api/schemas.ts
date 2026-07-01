@@ -74,6 +74,7 @@ export const TileManifestSchema = z.object({
   ready: z.boolean(),
   base_pmtiles: z.boolean(),
   exposure_pmtiles: z.record(z.string(), z.boolean()),
+  flow_pmtiles: z.record(z.string(), z.boolean()).optional().default({}),
   tippecanoe_available: z.boolean(),
   tiles_path: z.string(),
 }).strict();
@@ -91,7 +92,21 @@ export const DataQualitySchema = z.object({
   low_confidence_count: z.number(),
 }).strict();
 
+export const FlowIndicatorSchema = z.object({
+  feature_id: z.number(),
+  indicator_type: z.string(),
+  geom: z.record(z.string(), z.unknown()),
+  flow_direction_deg: z.number(),
+  flow_strength: z.number(),
+  confidence: z.number(),
+  exposure_class: z.string(),
+  reason: z.string(),
+  source: z.string(),
+  feature_type: z.string(),
+}).strict();
+
 export type TileManifest = z.infer<typeof TileManifestSchema>;
+export type FlowIndicator = z.infer<typeof FlowIndicatorSchema>;
 export type Area = z.infer<typeof AreaSchema>;
 export type DataQuality = z.infer<typeof DataQualitySchema>;
 export type Scenario = z.infer<typeof ScenarioSchema>;

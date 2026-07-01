@@ -7,3 +7,4 @@ def test_tile_manifest_missing():
     manifest = tile_manifest("nonexistent_area")
     assert manifest["ready"] is False
     assert manifest["base_pmtiles"] is False
+    assert manifest["flow_pmtiles"] == {}
