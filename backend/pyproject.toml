@@ -1,0 +1,58 @@
+[project]
+name = "wind-track-api"
+version = "0.1.0"
+description = "Urban wind exposure API for Lyon"
+readme = "README.md"
+authors = [
+    { name = "Daniel Mathias", email = "nex.mod.daniel@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "fastapi>=0.138.2",
+    "geojson>=3.3.0",
+    "httpx>=0.28.1",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "shapely>=2.1.2",
+    "uvicorn>=0.49.0",
+]
+
+[project.scripts]
+wind-track-migrate = "wind_track.cli:migrate"
+wind-track-seed = "wind_track.cli:seed"
+wind-track-metrics = "wind_track.cli:compute_metrics"
+wind-track-precompute = "wind_track.cli:precompute_directions"
+wind-track-import-osm = "wind_track.cli:import_osm"
+wind-track-enrich-heights = "wind_track.cli:enrich_heights"
+wind-track-validate = "wind_track.cli:validate"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wind_track"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.1.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.15.20",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true

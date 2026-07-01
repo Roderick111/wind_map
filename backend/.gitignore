@@ -1,0 +1,13 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Ephemeral test database (dev DB lives in ../data/wind_track.db)
+tests/.test_wind_track.db

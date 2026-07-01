@@ -1,0 +1,1 @@
+"""Validation harness for manual sanity checks and baseline comparison."""
