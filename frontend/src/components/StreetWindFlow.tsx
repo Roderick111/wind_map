@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type maplibregl from "maplibre-gl";
 import type { FeatureResult } from "../api/schemas";
 import {
@@ -27,6 +27,15 @@ type Particle = {
 const STREET_TILE_LAYER = "exposure-pmtiles-line";
 const MAX_PARTICLES = 1400;
 
+function mapStyleReady(map: maplibregl.Map | null): boolean {
+  if (!map) return false;
+  try {
+    return Boolean(map.isStyleLoaded());
+  } catch {
+    return false;
+  }
+}
+
 function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace("#", "");
   const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
@@ -41,26 +50,31 @@ function segmentsFromTileFeatures(
   map: maplibregl.Map,
   windDirectionDeg: number,
 ): StreetSegment[] {
-  if (!map.getLayer(STREET_TILE_LAYER)) return [];
-  const rendered = map.queryRenderedFeatures({ layers: [STREET_TILE_LAYER] });
-  const segments: StreetSegment[] = [];
-  for (const feat of rendered) {
-    if (feat.geometry.type !== "LineString") continue;
-    const ftype = String(feat.properties?.feature_type ?? "");
-    if (!["street_segment", "quay", "bridge"].includes(ftype)) continue;
-    const risk = Number(feat.properties?.risk_score ?? 0);
-    if (risk < 35) continue;
-    const coords = feat.geometry.coordinates as [number, number][];
-    if (coords.length < 2) continue;
-    segments.push({
-      coords,
-      color: exposureColor(String(feat.properties?.exposure_class ?? "medium")),
-      speed: 12 + risk * 0.35,
-      forward: windForward(coords, windDirectionDeg),
-    });
-    if (segments.length >= 900) break;
+  if (!mapStyleReady(map)) return [];
+  try {
+    if (!map.getLayer(STREET_TILE_LAYER)) return [];
+    const rendered = map.queryRenderedFeatures({ layers: [STREET_TILE_LAYER] });
+    const segments: StreetSegment[] = [];
+    for (const feat of rendered) {
+      if (feat.geometry.type !== "LineString") continue;
+      const ftype = String(feat.properties?.feature_type ?? "");
+      if (!["street_segment", "quay", "bridge"].includes(ftype)) continue;
+      const risk = Number(feat.properties?.risk_score ?? 0);
+      if (risk < 35) continue;
+      const coords = feat.geometry.coordinates as [number, number][];
+      if (coords.length < 2) continue;
+      segments.push({
+        coords,
+        color: exposureColor(String(feat.properties?.exposure_class ?? "medium")),
+        speed: 12 + risk * 0.35,
+        forward: windForward(coords, windDirectionDeg),
+      });
+      if (segments.length >= 900) break;
+    }
+    return segments;
+  } catch {
+    return [];
   }
-  return segments;
 }
 
 function buildParticles(segments: StreetSegment[]): Particle[] {
@@ -93,17 +107,33 @@ export function StreetWindFlow({
   const lastTsRef = useRef(0);
   const resultsRef = useRef(results);
   const windRef = useRef(windDirectionDeg);
+  const useTileLayersRef = useRef(useTileLayers);
   resultsRef.current = results;
   windRef.current = windDirectionDeg;
+  useTileLayersRef.current = useTileLayers;
 
-  const refreshSegments = () => {
-    if (!map) return;
-    const segments = useTileLayers
-      ? segmentsFromTileFeatures(map, windRef.current)
-      : segmentsFromResults(resultsRef.current, windRef.current);
+  const refreshSegments = useCallback(() => {
+    if (!map || !mapStyleReady(map)) {
+      segmentsRef.current = [];
+      particlesRef.current = [];
+      return;
+    }
+
+    let segments: StreetSegment[] = [];
+    const fromResults = () => segmentsFromResults(resultsRef.current, windRef.current);
+
+    if (useTileLayersRef.current) {
+      segments = segmentsFromTileFeatures(map, windRef.current);
+      if (segments.length === 0) {
+        segments = fromResults();
+      }
+    } else {
+      segments = fromResults();
+    }
+
     segmentsRef.current = segments;
     particlesRef.current = buildParticles(segments);
-  };
+  }, [map]);
 
   useEffect(() => {
     if (!active || !map || !canvasRef.current) return;
@@ -113,6 +143,7 @@ export function StreetWindFlow({
     if (!ctx) return;
 
     const resize = () => {
+      if (!mapStyleReady(map)) return;
       const rect = map.getContainer().getBoundingClientRect();
       canvas.width = rect.width * devicePixelRatio;
       canvas.height = rect.height * devicePixelRatio;
@@ -122,13 +153,29 @@ export function StreetWindFlow({
       refreshSegments();
     };
 
-    resize();
+    const onMapReady = () => {
+      resize();
+      refreshSegments();
+    };
+
+    if (mapStyleReady(map)) {
+      resize();
+    } else {
+      map.once("load", onMapReady);
+      map.once("styledata", onMapReady);
+    }
+
     map.on("resize", resize);
     map.on("moveend", refreshSegments);
     map.on("zoomend", refreshSegments);
     map.on("idle", refreshSegments);
 
     const draw = (ts: number) => {
+      if (!mapStyleReady(map)) {
+        rafRef.current = requestAnimationFrame(draw);
+        return;
+      }
+
       const dt = lastTsRef.current ? Math.min(0.05, (ts - lastTsRef.current) / 1000) : 0.016;
       lastTsRef.current = ts;
 
@@ -192,17 +239,19 @@ export function StreetWindFlow({
     return () => {
       cancelAnimationFrame(rafRef.current);
       lastTsRef.current = 0;
+      map.off("load", onMapReady);
+      map.off("styledata", onMapReady);
       map.off("resize", resize);
       map.off("moveend", refreshSegments);
       map.off("zoomend", refreshSegments);
       map.off("idle", refreshSegments);
     };
-  }, [active, map, useTileLayers]);
+  }, [active, map, refreshSegments]);
 
   useEffect(() => {
     if (!active || !map) return;
     refreshSegments();
-  }, [active, map, results, windDirectionDeg, useTileLayers]);
+  }, [active, map, results, windDirectionDeg, useTileLayers, refreshSegments]);
 
   if (!active) return null;
 
