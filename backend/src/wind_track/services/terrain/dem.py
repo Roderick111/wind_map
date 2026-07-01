@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from dataclasses import dataclass
@@ -12,9 +13,13 @@ import httpx
 
 from wind_track.config.settings import DATA_DIR
 from wind_track.services.areas import AREA_DEFINITIONS, Bbox
+from wind_track.services.progress import log_step
 
 ELEVATION_URL = "https://api.open-meteo.com/v1/elevation"
-BATCH_SIZE = 100
+BATCH_SIZE = 50
+BATCH_DELAY_S = 0.8
+MAX_GRID_POINTS = 1_200
+MAX_FETCH_RETRIES = 8
 
 
 @dataclass(frozen=True)
@@ -47,10 +52,25 @@ def dem_cache_path(area_slug: str) -> Path:
     return DATA_DIR / "dem" / f"{area_slug}.json"
 
 
+def grid_point_count(bbox: Bbox, step: float) -> int:
+    """Return lat×lon sample count for a bbox and step."""
+    lats, lons = _build_grid_coords(bbox, step)
+    return len(lats) * len(lons)
+
+
 def grid_step_for_bbox(bbox: Bbox) -> float:
-    """Pick grid spacing — coarser for large areas."""
+    """Pick grid spacing — coarser for large areas, capped to limit API load."""
     span = max(bbox.max_lon - bbox.min_lon, bbox.max_lat - bbox.min_lat)
-    return 0.003 if span > 0.08 else 0.0015
+    if span > 0.12:
+        step = 0.006
+    elif span > 0.06:
+        step = 0.003
+    else:
+        step = 0.0015
+
+    while grid_point_count(bbox, step) > MAX_GRID_POINTS and step < 0.015:
+        step = round(step * 1.35, 4)
+    return step
 
 
 def _build_grid_coords(bbox: Bbox, step: float) -> tuple[list[float], list[float]]:
@@ -67,19 +87,64 @@ def _build_grid_coords(bbox: Bbox, step: float) -> tuple[list[float], list[float
     return lats, lons
 
 
+async def _fetch_batch(
+    client: httpx.AsyncClient,
+    batch: list[tuple[float, float]],
+) -> list[float]:
+    """Fetch one elevation batch with retry/backoff on rate limits."""
+    lat_q = ",".join(str(p[0]) for p in batch)
+    lon_q = ",".join(str(p[1]) for p in batch)
+    last_exc: Exception | None = None
+    for attempt in range(MAX_FETCH_RETRIES):
+        resp = await client.get(
+            ELEVATION_URL,
+            params={"latitude": lat_q, "longitude": lon_q},
+        )
+        if resp.status_code == 429:
+            wait_s = min(60.0, 2.0 ** attempt)
+            log_step(
+                "elevation rate limited — backing off",
+                wait_s=round(wait_s, 1),
+                attempt=attempt + 1,
+            )
+            await asyncio.sleep(wait_s)
+            last_exc = httpx.HTTPStatusError(
+                "429 Too Many Requests",
+                request=resp.request,
+                response=resp,
+            )
+            continue
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            last_exc = exc
+            if resp.status_code >= 500 and attempt < MAX_FETCH_RETRIES - 1:
+                await asyncio.sleep(2.0 ** attempt)
+                continue
+            raise
+        data = resp.json()
+        return [float(z) for z in data["elevation"]]
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("elevation fetch failed without response")
+
+
 async def _fetch_elevations(lats: list[float], lons: list[float]) -> list[float]:
     """Batch-fetch elevations for coordinate pairs."""
     pairs = [(la, lo) for la in lats for lo in lons]
     results: list[float] = []
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        for i in range(0, len(pairs), BATCH_SIZE):
+    batch_count = math.ceil(len(pairs) / BATCH_SIZE)
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        for batch_idx, i in enumerate(range(0, len(pairs), BATCH_SIZE), start=1):
             batch = pairs[i : i + BATCH_SIZE]
-            lat_q = ",".join(str(p[0]) for p in batch)
-            lon_q = ",".join(str(p[1]) for p in batch)
-            resp = await client.get(ELEVATION_URL, params={"latitude": lat_q, "longitude": lon_q})
-            resp.raise_for_status()
-            data = resp.json()
-            results.extend(float(z) for z in data["elevation"])
+            log_step(
+                "fetching elevation batch",
+                batch=f"{batch_idx}/{batch_count}",
+                points=len(batch),
+            )
+            results.extend(await _fetch_batch(client, batch))
+            if i + BATCH_SIZE < len(pairs):
+                await asyncio.sleep(BATCH_DELAY_S)
     return results
 
 
@@ -87,6 +152,13 @@ async def fetch_dem_grid(bbox: Bbox, step: float | None = None) -> DemGrid:
     """Download elevation grid for bbox."""
     step = step or grid_step_for_bbox(bbox)
     lats, lons = _build_grid_coords(bbox, step)
+    log_step(
+        "elevation grid",
+        rows=len(lats),
+        cols=len(lons),
+        points=len(lats) * len(lons),
+        step_deg=step,
+    )
     flat = await _fetch_elevations(lats, lons)
     rows: list[list[float]] = []
     idx = 0
@@ -127,13 +199,19 @@ async def load_or_fetch_dem_grid(area_slug: str, *, force: bool = False) -> DemG
     if not force:
         cached = load_dem_grid(area_slug)
         if cached:
+            log_step("using cached elevation grid", area=area_slug, rows=len(cached.lats))
             return cached
     area = AREA_DEFINITIONS.get(area_slug)
     if not area:
         raise ValueError(f"Unknown area: {area_slug}")
     bbox: Bbox = area["bbox"]
+    if force:
+        log_step("refetching elevation grid", area=area_slug)
+    else:
+        log_step("fetching elevation grid", area=area_slug)
     grid = await fetch_dem_grid(bbox)
-    save_dem_grid(area_slug, grid)
+    path = save_dem_grid(area_slug, grid)
+    log_step("saved elevation grid", path=str(path))
     return grid
 
 

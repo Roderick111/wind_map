@@ -15,9 +15,9 @@ make enrich-heights # BD TOPO + neighborhood median + quay promotion
 make validate       # seed + run Presqu'île sanity validation
 make pipeline-lyon  # full Lyon: import → enrich → zones → 16-dir → tiles → audit
 make generate-tiles AREA=lyon_full DIRECTIONS=16
-make import-dem AREA=pilot_presquile          # DEM + slope metrics
-make import-dem AREA=lyon_full FORCE=1        # fetch Lyon elevation grid
-make import-dem AREA=lyon_full RECOMPUTE=1  # DEM + refresh directional cache
+make import-dem AREA=pilot_presquile
+make import-dem AREA=lyon_full                # uses cached DEM when present
+make import-dem AREA=lyon_full RECOMPUTE=1    # apply metrics + refresh score cache
 make audit AREA=lyon_full
 ```
 
@@ -168,7 +168,7 @@ Dev data persists in `data/wind_track.db`.
 - ~75 Presqu'île buildings still on `fallback_default` (BD TOPO centroid miss)
 - ~8% Lyon buildings on fallback height
 - Validation is manual sanity screening, not certified field truth
-- Lyon DEM not applied until `make import-dem AREA=lyon_full` — hill scores use geometry until then
+- Lyon DEM not applied until `make import-dem AREA=lyon_full` — uses `data/dem/lyon_full.json` when cached
 - Flow arrows on Lyon require `make generate-tiles` rerun to build `flow_*.pmtiles`
 - Building exposure in tile mode can be heavy — off by default
 

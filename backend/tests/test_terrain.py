@@ -1,11 +1,18 @@
 """Terrain DEM and scoring tests."""
 
-import pytest
-
+from wind_track.services.areas import LYON_FULL_BBOX, PRESQUILE_BBOX
 from wind_track.services.scoring.config import DEFAULT_SCALAR_CONFIG
 from wind_track.services.scoring.scalar import score_feature
-from wind_track.services.terrain.dem import DemGrid, sample_terrain
+from wind_track.services.terrain.dem import (
+    MAX_GRID_POINTS,
+    DemGrid,
+    grid_point_count,
+    grid_step_for_bbox,
+    sample_terrain,
+)
 from wind_track.services.terrain.score import terrain_multiplier_and_tags
+
+TERRAIN_MULT = DEFAULT_SCALAR_CONFIG["multipliers"]["terrain"]
 
 
 def _hill_grid() -> DemGrid:
@@ -19,6 +26,18 @@ def _hill_grid() -> DemGrid:
     return DemGrid(lats=lats, lons=lons, elevations=elevations)
 
 
+def test_lyon_grid_step_stays_within_api_budget():
+    step = grid_step_for_bbox(LYON_FULL_BBOX)
+    assert grid_point_count(LYON_FULL_BBOX, step) <= MAX_GRID_POINTS
+    assert step >= 0.003
+
+
+def test_presquile_grid_step_is_finer():
+    pilot_step = grid_step_for_bbox(PRESQUILE_BBOX)
+    lyon_step = grid_step_for_bbox(LYON_FULL_BBOX)
+    assert pilot_step <= lyon_step
+
+
 def test_sample_terrain_computes_slope():
     grid = _hill_grid()
     sample = sample_terrain(grid, 4.831, 45.751)
@@ -28,8 +47,8 @@ def test_sample_terrain_computes_slope():
 
 def test_terrain_windward_vs_lee():
     metrics = {"slope_deg": 8.0, "slope_aspect_deg": 90.0, "relative_elevation_m": 12.0}
-    mult_wind, tags_wind = terrain_multiplier_and_tags(metrics, 90.0, DEFAULT_SCALAR_CONFIG["multipliers"]["terrain"])
-    mult_lee, tags_lee = terrain_multiplier_and_tags(metrics, 270.0, DEFAULT_SCALAR_CONFIG["multipliers"]["terrain"])
+    mult_wind, tags_wind = terrain_multiplier_and_tags(metrics, 90.0, TERRAIN_MULT)
+    mult_lee, tags_lee = terrain_multiplier_and_tags(metrics, 270.0, TERRAIN_MULT)
     assert mult_wind > mult_lee
     assert "exposed_slope" in tags_wind
     assert "lee_shelter" in tags_lee
