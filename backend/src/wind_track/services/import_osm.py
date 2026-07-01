@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -20,7 +22,10 @@ from wind_track.services.directional_cache import cache_status
 from wind_track.services.metrics.batch import compute_metrics_for_area
 from wind_track.services.osm_normalize import classify_osm_element, dedupe_features
 from wind_track.services.precompute import precompute_directions
+from wind_track.services.priority_zones import seed_priority_zones
+from wind_track.services.overpass_fetch import fetch_overpass_merged
 from wind_track.services.quay_detect import promote_quay_streets
+from wind_track.services.progress import log_step
 from wind_track.services.scoring.config import DEFAULT_SCALAR_CONFIG
 
 OVERPASS_ENDPOINTS = [
@@ -31,7 +36,28 @@ OVERPASS_ENDPOINTS = [
 OVERPASS_QUERY_TIMEOUT_SEC = 180
 OVERPASS_HTTP_TIMEOUT = httpx.Timeout(30.0, read=300.0)
 OVERPASS_MAX_ATTEMPTS = 3
+OVERPASS_HEARTBEAT_SEC = 30
 MIN_STREETS_FOR_IMPORT = 50
+OVERPASS_CACHE_DIR = settings.db_path.parent / "overpass_cache"
+
+
+def _overpass_cache_path(slug: str) -> Path:
+    return OVERPASS_CACHE_DIR / f"{slug}.json"
+
+
+def _load_overpass_cache(slug: str) -> list[dict[str, Any]] | None:
+    path = _overpass_cache_path(slug)
+    if not path.exists():
+        return None
+    log_step("loading overpass cache", path=str(path))
+    return json.loads(path.read_text())
+
+
+def _save_overpass_cache(slug: str, elements: list[dict[str, Any]]) -> None:
+    OVERPASS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _overpass_cache_path(slug)
+    path.write_text(json.dumps(elements))
+    log_step("overpass cache saved", elements=len(elements), path=str(path))
 
 
 def _overpass_query(bbox_str: str) -> str:
@@ -54,6 +80,28 @@ def _overpass_query(bbox_str: str) -> str:
     """
 
 
+async def _overpass_post_with_heartbeat(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    content: str,
+    headers: dict[str, str],
+) -> httpx.Response:
+    """POST to Overpass; emit heartbeat logs while the server works (up to 5 min)."""
+    host = url.split("/")[2]
+    task = asyncio.create_task(
+        client.post(url, content=content, headers=headers),
+    )
+    waited = 0
+    while not task.done():
+        await asyncio.sleep(OVERPASS_HEARTBEAT_SEC)
+        if task.done():
+            break
+        waited += OVERPASS_HEARTBEAT_SEC
+        log_step("overpass still waiting", host=host, waited_s=waited, max_wait_s=300)
+    return await task
+
+
 async def fetch_overpass(bbox_str: str) -> list[dict[str, Any]]:
     """Download OSM elements from Overpass with retries across mirrors."""
     query = _overpass_query(bbox_str)
@@ -61,23 +109,42 @@ async def fetch_overpass(bbox_str: str) -> list[dict[str, Any]]:
         "User-Agent": "WindTrack/0.5 (urban-wind-exposure; local-dev)",
         "Accept": "application/json",
     }
+    post_headers = {**headers, "Content-Type": "text/plain; charset=utf-8"}
     last_error: Exception | None = None
     async with httpx.AsyncClient(timeout=OVERPASS_HTTP_TIMEOUT, follow_redirects=True) as client:
-        for url in OVERPASS_ENDPOINTS:
+        for mirror_idx, url in enumerate(OVERPASS_ENDPOINTS):
+            host = url.split("/")[2]
+            if mirror_idx > 0:
+                log_step("overpass mirror switch", host=host)
             for attempt in range(OVERPASS_MAX_ATTEMPTS):
                 try:
                     if attempt > 0:
                         await asyncio.sleep(2 ** attempt)
-                    resp = await client.post(
+                    log_step(
+                        "overpass request",
+                        host=host,
+                        attempt=attempt + 1,
+                        max_attempts=OVERPASS_MAX_ATTEMPTS,
+                        bbox=bbox_str[:40],
+                    )
+                    resp = await _overpass_post_with_heartbeat(
+                        client,
                         url,
                         content=query,
-                        headers={**headers, "Content-Type": "text/plain; charset=utf-8"},
+                        headers=post_headers,
                     )
                     resp.raise_for_status()
                     payload = resp.json()
+                    log_step("overpass ok", host=host, elements=len(payload.get("elements", [])))
                     return payload.get("elements", [])
                 except httpx.HTTPError as exc:
                     last_error = exc
+                    log_step(
+                        "overpass failed",
+                        host=host,
+                        attempt=attempt + 1,
+                        error=str(exc)[:160],
+                    )
     if last_error:
         raise last_error
     return []
@@ -152,9 +219,35 @@ async def import_osm_area(slug: str = "pilot_presquile", *, force: bool = False)
     bbox = definition["bbox"]
     now = utc_now()
 
-    elements = await fetch_overpass(bbox.overpass_str())
-    raw_features = [classify_osm_element(el) for el in elements]
-    features = dedupe_features([f for f in raw_features if f])
+    grid = 3 if slug == "lyon_full" else 1
+    cached = None if force else _load_overpass_cache(slug)
+    if cached is not None:
+        elements = cached
+        log_step("osm loaded from cache", elements=len(elements))
+    else:
+        log_step("downloading osm", area=slug, grid=f"{grid}x{grid}")
+        elements = await fetch_overpass_merged(fetch_overpass, bbox, grid=grid)
+        log_step("osm downloaded", elements=len(elements))
+        _save_overpass_cache(slug, elements)
+    raw_features: list[dict[str, Any]] = []
+    skipped = 0
+    for el in elements:
+        try:
+            feat = classify_osm_element(el)
+            if feat:
+                raw_features.append(feat)
+        except (TypeError, ValueError) as exc:
+            skipped += 1
+            if skipped <= 5:
+                log_step(
+                    "osm element skipped",
+                    id=el.get("id"),
+                    error=str(exc)[:120],
+                )
+    if skipped:
+        log_step("osm elements skipped total", count=skipped)
+    features = dedupe_features(raw_features)
+    log_step("osm classified", features=len(features))
     vector_zone_defs = AREA_VECTOR_ZONES.get(slug, [])
 
     async with get_db() as conn:
@@ -281,6 +374,7 @@ async def import_osm_area(slug: str = "pilot_presquile", *, force: bool = False)
 
         inserted = 0
         counts: dict[str, int] = {}
+        log_step("inserting features", count=len(features))
         for feat in features:
             g = geom_from_geojson(feat["geom"])
             cursor = await conn.execute(
@@ -329,9 +423,13 @@ async def import_osm_area(slug: str = "pilot_presquile", *, force: bool = False)
                 ),
             )
 
+    log_step("post-import", quays="promote", zones="seed", metrics="compute")
     quays_promoted = await promote_quay_streets(slug)
+    priority_stats = await seed_priority_zones(slug)
     metrics_count = await compute_metrics_for_area(area_id, data_version_id)
+    log_step("metrics computed", count=metrics_count)
     precompute_stats = await precompute_directions(slug)
+    log_step("import precompute done", entries=precompute_stats.get("entries", 0))
 
     return {
         "area_id": area_id,
@@ -345,4 +443,6 @@ async def import_osm_area(slug: str = "pilot_presquile", *, force: bool = False)
         "vector_zones": len(vector_zone_defs),
         "precompute": precompute_stats,
         "quays_promoted": quays_promoted,
+        "priority_zones": priority_stats,
+        "overpass_grid": grid,
     }

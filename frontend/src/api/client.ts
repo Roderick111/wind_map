@@ -1,12 +1,13 @@
 import {
   AreaSchema,
   DataQualitySchema,
+  TileManifestSchema,
   FeatureResultSchema,
   ScenarioSchema,
   WeatherSchema,
 } from "./schemas";
 import { normalizeDirectionDeg } from "../lib/wind";
-import type { Area, DataQuality, FeatureResult, Scenario, Weather } from "./schemas";
+import type { Area, DataQuality, FeatureResult, Scenario, TileManifest, Weather } from "./schemas";
 
 const BASE = "/api";
 
@@ -27,8 +28,15 @@ export async function getAreaSummary(areaId: number): Promise<{
   data_version: string | null;
   cache_ready: boolean;
   cache_entries: number;
+  tiles_ready?: boolean;
+  direction_count?: number;
 }> {
   return fetchJson(`${BASE}/areas/${areaId}/summary`);
+}
+
+export async function getTileManifest(areaSlug: string): Promise<TileManifest> {
+  const data = await fetchJson<unknown>(`${BASE}/areas/${areaSlug}/tiles`);
+  return TileManifestSchema.parse(data);
 }
 
 export async function getCachedExposure(
@@ -36,6 +44,7 @@ export async function getCachedExposure(
   directionDeg: number,
   windSpeedMs: number,
   windGustMs?: number | null,
+  bbox?: [number, number, number, number],
 ): Promise<FeatureResult[]> {
   const params = new URLSearchParams({
     direction_deg: String(normalizeDirectionDeg(directionDeg)),
@@ -43,6 +52,9 @@ export async function getCachedExposure(
   });
   if (windGustMs != null && windGustMs > 0) {
     params.set("wind_gust_ms", String(windGustMs));
+  }
+  if (bbox) {
+    params.set("bbox", bbox.join(","));
   }
   const data = await fetchJson<unknown[]>(
     `${BASE}/areas/${areaSlug}/exposure?${params}`,

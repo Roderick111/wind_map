@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from wind_track.api.routes import router
 from wind_track.config.settings import settings
@@ -32,3 +33,6 @@ app.add_middleware(
 )
 
 app.include_router(router)
+
+settings.tiles_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/tiles", StaticFiles(directory=settings.tiles_dir), name="tiles")

@@ -2,11 +2,13 @@ type Props = {
   showConfidence: boolean;
   showSpecial: boolean;
   showGust: boolean;
+  showBuildingExposure: boolean;
   showVectorZones: boolean;
   showLabels: boolean;
   onToggleConfidence: () => void;
   onToggleSpecial: () => void;
   onToggleGust: () => void;
+  onToggleBuildingExposure: () => void;
   onToggleVectorZones: () => void;
   onToggleLabels: () => void;
 };
@@ -15,17 +17,20 @@ export function LayerMenu({
   showConfidence,
   showSpecial,
   showGust,
+  showBuildingExposure,
   showVectorZones,
   showLabels,
   onToggleConfidence,
   onToggleSpecial,
   onToggleGust,
+  onToggleBuildingExposure,
   onToggleVectorZones,
   onToggleLabels,
 }: Props) {
   return (
     <div className="layer-menu">
       <span className="layer-title">Layers</span>
+      <label><input type="checkbox" checked={showBuildingExposure} onChange={onToggleBuildingExposure} /> Building exposure</label>
       <label><input type="checkbox" checked={showConfidence} onChange={onToggleConfidence} /> Confidence</label>
       <label><input type="checkbox" checked={showSpecial} onChange={onToggleSpecial} /> Special geometry</label>
       <label><input type="checkbox" checked={showGust} onChange={onToggleGust} /> Gust risk</label>

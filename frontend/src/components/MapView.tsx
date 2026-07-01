@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import type { FeatureResult } from "../api/schemas";
 import { confidenceOpacity, exposureColor } from "../lib/exposure";
+import { ensurePmtilesProtocol, EXPOSURE_COLOR_EXPR, pmtilesUrl } from "../lib/pmtiles";
 
 type VectorZone = {
   id: number;
@@ -14,16 +15,26 @@ type VectorZone = {
 type Props = {
   center: [number, number];
   zoom: number;
+  areaSlug: string | null;
   results: FeatureResult[];
   vectorZones: VectorZone[];
   showConfidence: boolean;
   showSpecial: boolean;
   showGust: boolean;
+  showBuildingExposure: boolean;
   showVectorZones: boolean;
   showLabels: boolean;
+  useTileLayers: boolean;
+  tileDirection: number | null;
+  tileBaseReady: boolean;
   selectedId: number | null;
   onSelect: (feature: FeatureResult) => void;
 };
+
+const GEOJSON_LAYERS = [
+  "exposure-fill", "exposure-line", "exposure-point", "exposure-labels", "exposure-labels-poly",
+];
+const EXPOSURE_TILE_LAYERS = ["exposure-pmtiles-fill", "exposure-pmtiles-line"];
 
 function featureLabel(r: FeatureResult): string {
   const name = r.name?.trim();
@@ -38,6 +49,33 @@ function featureLabel(r: FeatureResult): string {
     tunnel: "Tunnel",
   };
   return defaults[r.feature_type] ?? "";
+}
+
+function featureFromTileProps(
+  f: maplibregl.MapGeoJSONFeature,
+): FeatureResult | null {
+  const p = f.properties;
+  if (!p?.feature_id) return null;
+  return {
+    feature_id: Number(p.feature_id),
+    feature_type: String(p.feature_type ?? "street_segment"),
+    name: p.name ? String(p.name) : null,
+    geom: f.geometry as unknown as FeatureResult["geom"],
+    risk_score: Number(p.risk_score ?? 0),
+    exposure_class: String(p.exposure_class ?? "low"),
+    local_multiplier: 1,
+    approx_local_speed_ms: null,
+    gust_sensitive: Boolean(p.gust_sensitive),
+    confidence: Number(p.confidence ?? 0.7),
+    handling_mode: String(p.handling_mode ?? "normal_score"),
+    subscores: {},
+    cause_tags: [],
+    mitigation_tags: [],
+    model_note: null,
+    limitations: [],
+    cache_hit: true,
+    cache_direction_deg: p.direction_deg != null ? Number(p.direction_deg) : null,
+  };
 }
 
 function resultsToGeoJSON(
@@ -73,37 +111,272 @@ function resultsToGeoJSON(
   };
 }
 
+function setLayerVisibility(map: maplibregl.Map, ids: string[], visible: boolean) {
+  for (const id of ids) {
+    if (map.getLayer(id)) {
+      map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+    }
+  }
+}
+
+function buildOpacityExpr(
+  showConfidence: boolean,
+): maplibregl.ExpressionSpecification {
+  return showConfidence
+    ? ["+", 0.35, ["*", ["get", "confidence"], 0.65]]
+    : ["literal", 0.85];
+}
+
+function buildColorExpr(showGust: boolean): maplibregl.ExpressionSpecification {
+  return showGust
+    ? ["case", ["get", "gust_sensitive"], "#c026d3", EXPOSURE_COLOR_EXPR]
+    : EXPOSURE_COLOR_EXPR;
+}
+
+function buildPolygonFilter(
+  showBuildingExposure: boolean,
+): maplibregl.FilterSpecification {
+  if (showBuildingExposure) {
+    return ["==", ["geometry-type"], "Polygon"];
+  }
+  return [
+    "all",
+    ["==", ["geometry-type"], "Polygon"],
+    ["!=", ["get", "feature_type"], "building"],
+  ];
+}
+
+function removeExposureTileLayers(map: maplibregl.Map) {
+  for (const id of EXPOSURE_TILE_LAYERS) {
+    if (map.getLayer(id)) map.removeLayer(id);
+  }
+  if (map.getSource("exposure-pmtiles")) map.removeSource("exposure-pmtiles");
+}
+
+function removeAllPmtiles(map: maplibregl.Map) {
+  removeExposureTileLayers(map);
+  if (map.getLayer("base-tiles-line")) map.removeLayer("base-tiles-line");
+  if (map.getSource("base-tiles")) map.removeSource("base-tiles");
+}
+
 export function MapView({
   center,
   zoom,
+  areaSlug,
   results,
   vectorZones,
   showConfidence,
   showSpecial,
   showGust,
+  showBuildingExposure,
   showVectorZones,
   showLabels,
+  useTileLayers,
+  tileDirection,
+  tileBaseReady,
   selectedId,
   onSelect,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const resultsRef = useRef(results);
+  const onSelectRef = useRef(onSelect);
+  const tileClickRef = useRef<(
+    e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] },
+  ) => void | null>(null);
+  const exposureDirRef = useRef<number | null>(null);
+  const styleWaitBoundRef = useRef(false);
+  const performSyncTileModeRef = useRef<(map: maplibregl.Map) => void>(() => {});
+  const applyExposureDataRef = useRef<(map: maplibregl.Map) => void>(() => {});
+  const applyVectorZonesDataRef = useRef<(map: maplibregl.Map) => void>(() => {});
   resultsRef.current = results;
-  const [mapReady, setMapReady] = useState(false);
+  onSelectRef.current = onSelect;
 
-  const applyExposure = useCallback(() => {
+  const flushMapState = useCallback((map: maplibregl.Map) => {
+    applyExposureDataRef.current(map);
+    applyVectorZonesDataRef.current(map);
+    performSyncTileModeRef.current(map);
+  }, []);
+
+  const runWhenMapReady = useCallback((fn: () => void) => {
     const map = mapRef.current;
-    const src = map?.getSource("exposure") as maplibregl.GeoJSONSource | undefined;
+    if (!map) return;
+    if (map.isStyleLoaded()) {
+      fn();
+      return;
+    }
+    if (styleWaitBoundRef.current) return;
+    styleWaitBoundRef.current = true;
+    map.once("load", () => {
+      styleWaitBoundRef.current = false;
+      if (mapRef.current === map) flushMapState(map);
+    });
+  }, [flushMapState]);
+
+  const bindTileClickHandlers = useCallback((map: maplibregl.Map) => {
+    if (tileClickRef.current) {
+      map.off("click", "exposure-pmtiles-fill", tileClickRef.current);
+      map.off("click", "exposure-pmtiles-line", tileClickRef.current);
+    }
+    const handler = (
+      e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] },
+    ) => {
+      const raw = e.features?.[0];
+      if (!raw) return;
+      const feat = featureFromTileProps(raw);
+      if (feat) onSelectRef.current(feat);
+    };
+    tileClickRef.current = handler;
+    map.on("click", "exposure-pmtiles-fill", handler);
+    map.on("click", "exposure-pmtiles-line", handler);
+  }, []);
+
+  const applyExposureTileStyle = useCallback((
+    map: maplibregl.Map,
+    confidence: boolean,
+    gust: boolean,
+    buildings: boolean,
+  ) => {
+    const opacityExpr = buildOpacityExpr(confidence);
+    const colorExpr = buildColorExpr(gust);
+    const polygonFilter = buildPolygonFilter(buildings);
+
+    if (map.getLayer("exposure-pmtiles-fill")) {
+      map.setFilter("exposure-pmtiles-fill", polygonFilter);
+      map.setPaintProperty("exposure-pmtiles-fill", "fill-color", colorExpr);
+      map.setPaintProperty("exposure-pmtiles-fill", "fill-opacity", opacityExpr);
+    }
+    if (map.getLayer("exposure-pmtiles-line")) {
+      map.setPaintProperty("exposure-pmtiles-line", "line-color", colorExpr);
+      map.setPaintProperty("exposure-pmtiles-line", "line-opacity", opacityExpr);
+    }
+  }, []);
+
+  const addExposureTileLayers = useCallback((
+    map: maplibregl.Map,
+    slug: string,
+    direction: number,
+    confidence: boolean,
+    gust: boolean,
+    buildings: boolean,
+  ) => {
+    ensurePmtilesProtocol();
+    map.addSource("exposure-pmtiles", {
+      type: "vector",
+      url: pmtilesUrl(slug, `exposure_${direction}.pmtiles`),
+    });
+
+    const opacityExpr = buildOpacityExpr(confidence);
+    const colorExpr = buildColorExpr(gust);
+    const polygonFilter = buildPolygonFilter(buildings);
+
+    map.addLayer({
+      id: "exposure-pmtiles-fill",
+      type: "fill",
+      source: "exposure-pmtiles",
+      "source-layer": "exposure",
+      filter: polygonFilter,
+      paint: {
+        "fill-color": colorExpr,
+        "fill-opacity": opacityExpr,
+      },
+    });
+    map.addLayer({
+      id: "exposure-pmtiles-line",
+      type: "line",
+      source: "exposure-pmtiles",
+      "source-layer": "exposure",
+      filter: ["==", ["geometry-type"], "LineString"],
+      paint: {
+        "line-color": colorExpr,
+        "line-width": 5,
+        "line-opacity": opacityExpr,
+      },
+    });
+    bindTileClickHandlers(map);
+    exposureDirRef.current = direction;
+  }, [bindTileClickHandlers]);
+
+  const ensureBaseTileLayer = useCallback((map: maplibregl.Map, slug: string) => {
+    if (map.getSource("base-tiles")) return;
+    ensurePmtilesProtocol();
+    map.addSource("base-tiles", {
+      type: "vector",
+      url: pmtilesUrl(slug, "base.pmtiles"),
+    });
+    map.addLayer({
+      id: "base-tiles-line",
+      type: "line",
+      source: "base-tiles",
+      "source-layer": "base",
+      filter: ["!=", ["get", "feature_type"], "building"],
+      paint: {
+        "line-color": "#64748b",
+        "line-width": 1,
+        "line-opacity": 0.35,
+      },
+    });
+  }, []);
+
+  const performSyncTileMode = useCallback((map: maplibregl.Map) => {
+    if (!areaSlug) return;
+
+    if (!useTileLayers || tileDirection == null) {
+      removeAllPmtiles(map);
+      exposureDirRef.current = null;
+      setLayerVisibility(map, GEOJSON_LAYERS, true);
+      return;
+    }
+
+    setLayerVisibility(map, GEOJSON_LAYERS, false);
+
+    if (tileBaseReady) {
+      ensureBaseTileLayer(map, areaSlug);
+    } else if (map.getSource("base-tiles")) {
+      if (map.getLayer("base-tiles-line")) map.removeLayer("base-tiles-line");
+      map.removeSource("base-tiles");
+    }
+
+    const dirChanged = exposureDirRef.current !== tileDirection;
+    const hasExposureLayers = Boolean(map.getLayer("exposure-pmtiles-fill"));
+    const needsExposure = !map.getSource("exposure-pmtiles") || dirChanged || !hasExposureLayers;
+    if (needsExposure) {
+      removeExposureTileLayers(map);
+      addExposureTileLayers(
+        map,
+        areaSlug,
+        tileDirection,
+        showConfidence,
+        showGust,
+        showBuildingExposure,
+      );
+      return;
+    }
+
+    applyExposureTileStyle(map, showConfidence, showGust, showBuildingExposure);
+  }, [
+    addExposureTileLayers,
+    applyExposureTileStyle,
+    areaSlug,
+    ensureBaseTileLayer,
+    showBuildingExposure,
+    showConfidence,
+    showGust,
+    tileBaseReady,
+    tileDirection,
+    useTileLayers,
+  ]);
+
+  const applyExposureData = useCallback((map: maplibregl.Map) => {
+    const src = map.getSource("exposure") as maplibregl.GeoJSONSource | undefined;
     if (!src) return;
     src.setData(
       resultsToGeoJSON(resultsRef.current, showConfidence, showSpecial, showGust, showLabels),
     );
   }, [showConfidence, showSpecial, showGust, showLabels]);
 
-  const applyVectorZones = useCallback(() => {
-    const map = mapRef.current;
-    const src = map?.getSource("vector-zones") as maplibregl.GeoJSONSource | undefined;
+  const applyVectorZonesData = useCallback((map: maplibregl.Map) => {
+    const src = map.getSource("vector-zones") as maplibregl.GeoJSONSource | undefined;
     if (!src) return;
     if (!showVectorZones) {
       src.setData({ type: "FeatureCollection", features: [] });
@@ -118,6 +391,34 @@ export function MapView({
       })),
     });
   }, [vectorZones, showVectorZones]);
+
+  performSyncTileModeRef.current = performSyncTileMode;
+  applyExposureDataRef.current = applyExposureData;
+  applyVectorZonesDataRef.current = applyVectorZonesData;
+
+  const syncTileMode = useCallback(() => {
+    runWhenMapReady(() => {
+      const map = mapRef.current;
+      if (!map) return;
+      performSyncTileMode(map);
+    });
+  }, [performSyncTileMode, runWhenMapReady]);
+
+  const applyExposure = useCallback(() => {
+    runWhenMapReady(() => {
+      const map = mapRef.current;
+      if (!map) return;
+      applyExposureData(map);
+    });
+  }, [applyExposureData, runWhenMapReady]);
+
+  const applyVectorZones = useCallback(() => {
+    runWhenMapReady(() => {
+      const map = mapRef.current;
+      if (!map) return;
+      applyVectorZonesData(map);
+    });
+  }, [applyVectorZonesData, runWhenMapReady]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -147,7 +448,7 @@ export function MapView({
       const fid = e.features?.[0]?.properties?.feature_id;
       if (fid == null) return;
       const feat = resultsRef.current.find((r) => r.feature_id === Number(fid));
-      if (feat) onSelect(feat);
+      if (feat) onSelectRef.current(feat);
     };
 
     map.on("load", () => {
@@ -238,36 +539,43 @@ export function MapView({
       map.on("click", "exposure-fill", clickHandler);
       map.on("click", "exposure-line", clickHandler);
       map.on("click", "exposure-point", clickHandler);
-      setMapReady(true);
+
+      flushMapState(map);
     });
 
     mapRef.current = map;
     return () => {
-      setMapReady(false);
+      styleWaitBoundRef.current = false;
       map.remove();
       mapRef.current = null;
+      exposureDirRef.current = null;
+      tileClickRef.current = null;
     };
-  }, [center, zoom, onSelect]);
+  }, [center, zoom, flushMapState]);
 
   useEffect(() => {
-    if (!mapReady) return;
     applyExposure();
-  }, [mapReady, results, applyExposure]);
+  }, [results, applyExposure]);
 
   useEffect(() => {
-    if (!mapReady) return;
     applyVectorZones();
-  }, [mapReady, applyVectorZones]);
+  }, [applyVectorZones]);
 
   useEffect(() => {
-    if (!mapReady || selectedId == null) return;
-    const map = mapRef.current;
-    if (!map) return;
-    const feat = results.find((r) => r.feature_id === selectedId);
-    if (!feat) return;
-    const coords = centroidOf(feat.geom as unknown as GeoJSON.Geometry);
-    map.flyTo({ center: coords, zoom: Math.max(map.getZoom(), 16), duration: 600 });
-  }, [mapReady, selectedId, results]);
+    syncTileMode();
+  }, [syncTileMode]);
+
+  useEffect(() => {
+    if (selectedId == null) return;
+    runWhenMapReady(() => {
+      const map = mapRef.current;
+      if (!map) return;
+      const feat = results.find((r) => r.feature_id === selectedId);
+      if (!feat) return;
+      const coords = centroidOf(feat.geom as unknown as GeoJSON.Geometry);
+      map.flyTo({ center: coords, zoom: Math.max(map.getZoom(), 16), duration: 600 });
+    });
+  }, [runWhenMapReady, selectedId, results]);
 
   return <div ref={containerRef} className="map-container" />;
 }

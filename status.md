@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-01
 
-**Scope:** v0.5 beta — Presqu'île pilot + Lyon full (import-ready). Screening tool, not CFD.
+**Scope:** v0.5 beta — Presqu'île pilot + **Lyon full imported**. Screening tool, not CFD.
 
 ## Running locally
 
@@ -13,7 +13,9 @@ make test           # isolated test DB — dev data safe
 
 make enrich-heights # BD TOPO + neighborhood median + quay promotion
 make validate       # seed + run Presqu'île sanity validation
-make import-osm AREA=lyon_full FORCE=1   # full city (slow; Overpass)
+make pipeline-lyon  # full Lyon: import → enrich → zones → 16-dir → tiles → audit
+make generate-tiles AREA=lyon_full DIRECTIONS=16
+make audit AREA=lyon_full
 ```
 
 Dev data persists in `data/wind_track.db`.
@@ -28,15 +30,21 @@ Dev data persists in `data/wind_track.db`.
 |------|--------|
 | SQLite schema + migrations | Done |
 | Presqu'île OSM import | Done — ~7k features |
-| **Lyon full area** (`lyon_full`) | Done — bbox + import CLI (not pre-imported) |
+| **Lyon full area** (`lyon_full`) | **Done — imported & processed** |
 | Import skip-if-present + `FORCE=1` | Done |
 | Metrics batch | Done |
 | 8-direction precompute cache | Done |
+| **16-direction precompute** | Done — Lyon full (3.35M cache entries) |
 | **BD TOPO height enrichment** | Done — IGN WFS `BDTOPO_V3:batiment`, centroid match |
 | **Quay detection** | Done — `Quai …` name + `man_made` tags at import; `promote_quay_streets()` on import/enrich |
 | Neighborhood height fallback | Done — 40 m OSM median for unmatched buildings |
 | Optional file patches | Done — `data/heights/{slug}.geojson` |
-| PMTiles | Not started |
+| **PMTiles** | Done — `make generate-tiles`; served at `/tiles/{slug}/` |
+| **Full Lyon pipeline** | Done — `make pipeline-lyon` (~17 min tiles on M-series Mac) |
+| **Priority zones** | Done — Vieux Lyon, Fourvière, Croix-Rousse, bridge corridors |
+| **Quality audit** | Done — `make audit` |
+| **Overpass 3×3 grid + cache** | Done — `data/overpass_cache/lyon_full.json` |
+| **French OSM decimal parse** (`8,40`) | Done |
 
 **Presqu'île data quality (after enrich):**
 
@@ -48,11 +56,24 @@ Dev data persists in `data/wind_track.db`.
 | Fallback (`fallback_default`) | ~2.9% |
 | Quays | **129** (was 0) |
 
+**Lyon full data quality (2026-07-01 pipeline):**
+
+| Metric | Value |
+|--------|-------|
+| Features | **209 542** |
+| Buildings | 113 032 |
+| Official height | **91.8%** |
+| Streets | 85 362 |
+| Bridges / quays / tunnels | 1 394 / 566 / 526 |
+| PMTiles | base + 16 exposure layers ready |
+| Cache entries | 3 352 672 |
+
 ### Scoring (scalar v0.1)
 
 - Full subscore model + special rules + handling modes
 - **Weather gust boost** — Open-Meteo gust/speed ratio raises risk + `gust_sensitive` flag
 - Gust wired through cache path (`wind_gust_ms` query param)
+- **Large-area guard** — `POST /scenarios/scalar` returns 409 when cache ready + area >10k features
 
 ### Validation harness (M11)
 
@@ -77,7 +98,9 @@ Dev data persists in `data/wind_track.db`.
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /areas/{slug}/exposure?wind_gust_ms=` | Cached exposure with gust scaling |
+| `GET /areas/{slug}/tiles` | PMTiles manifest |
 | `GET /areas/{id}/data-quality` | Official / estimated / fallback height tiers |
+| `POST /scenarios/scalar` | Live scoring (409 for large cached areas) |
 | `POST /validation/seed` | Seed sanity case |
 | `POST /validation/run` | Run baselines + metrics |
 | `GET /areas/{id}/vector-zones/{id}/export` | Vector research package |
@@ -88,41 +111,45 @@ Dev data persists in `data/wind_track.db`.
 | Feature | Status |
 |---------|--------|
 | Manual / current / forecast + instant cache | Done |
+| **PMTiles map mode** — Lyon full at scale | Done |
+| **Building exposure toggle** — streets only by default | Done |
+| **Fast direction updates** — swap tile URL, no full rebuild | Done |
+| **Map style-load guard** — no crash on Current / layer toggles | Done |
 | **Gust layer** — geometry + forecast gusts | Done |
 | **Validation panel** | Done |
 | **Area selector** (when multiple areas in DB) | Done |
 | **Data quality panel** — official / estimated / fallback tiers | Done |
+| Lyon defaults — vector zones + labels off (less clutter) | Done |
 | Explanation + vector disclaimer | Done |
 | About accuracy section | Partial — inline in app, not dedicated page |
 | Feedback button | Partial — API wired, minimal UI |
 
 ### Quality
 
-- **47 backend tests** passing
+- **57 backend tests** passing
 - Frontend build in `make test`
 
 ---
 
 ## Not yet implemented
 
-1. **Full Lyon OSM import** — area defined; import not run (Overpass scale/timeout risk)
-2. **PMTiles** — city-wide performant layers (required before smooth full-Lyon pan)
-3. **DEM / terrain** — Fourvière, Croix-Rousse slope metrics still placeholders
-4. **BDNB / Grand Lyon 3D** — BD TOPO chosen as primary; alternatives not wired
-5. **16-direction precompute** — 8-dir done; 16 optional per plan
-6. **Deploy** to staging
-7. **URock / vector-field generation** — zones marked scalar-limited only
+1. **DEM / terrain** — slope zones seeded; real DEM metrics still placeholders
+2. **BDNB / Grand Lyon 3D** — BD TOPO chosen as primary; alternatives not wired
+3. **Deploy** to staging
+4. **URock / vector-field generation** — zones marked scalar-limited only
+5. **Dedicated About accuracy page** + feedback UI polish
 
 ---
 
 ## Known limitations
 
-- Full Lyon OSM import is large — Overpass may timeout; use retries or off-peak
+- Full Lyon `/exposure` GeoJSON is too large for live pan — use PMTiles map mode (default when tiles ready)
+- Live scalar scoring blocked for Lyon (409) — intentional; prevents SQLite lock / timeout
 - ~75 Presqu'île buildings still on `fallback_default` (BD TOPO centroid miss)
+- ~8% Lyon buildings on fallback height
 - Validation is manual sanity screening, not certified field truth
-- Each `/exposure` returns full area GeoJSON (~7k features for pilot)
-- PMTiles required before smooth full-Lyon pan/zoom at scale
 - Hills/slopes scored without real DEM — terrain subscore is weak
+- Building exposure in tile mode can be heavy — off by default
 
 ---
 
@@ -131,13 +158,13 @@ Dev data persists in `data/wind_track.db`.
 | Milestone | Topic | Status |
 |-----------|-------|--------|
 | M0–M5 | Scaffold, schema, scoring, pilot UI | **Done** |
-| M6 | Real pilot data + quality dashboard | **Done** (BD TOPO + quays closed gaps) |
+| M6 | Real pilot data + quality dashboard | **Done** |
 | M7 | Weather + gust overlay | **Done** |
-| M9 | Directional precompute | **Done** (pilot); tiles pending |
+| M8 | Full Lyon pipeline | **Done** — imported, enriched, audited |
+| M9 | Directional precompute + PMTiles | **Done** — pilot + Lyon 16-dir |
 | M11 | Validation harness | **Done** (pilot) |
 | M10 | Vector zones + export | **Partial** — 3 zones; no URock |
-| M8 | Full Lyon pipeline | **Partial** — area + import CLI; no full import/DEM |
-| M12 | Public beta UX | **Partial** — pilot polished; full Lyon + about page light |
+| M12 | Public beta UX | **Partial** — Lyon map usable; about page light |
 
 ---
 
@@ -145,28 +172,25 @@ Dev data persists in `data/wind_track.db`.
 
 Ordered by dependency — see [docs/plans/2026-07-01-v05-implementation-plan.md](docs/plans/2026-07-01-v05-implementation-plan.md).
 
-### Phase A — Full Lyon data (M8)
+### Phase A — Full Lyon data (M8) — done
 
-**Goal:** Reproducible city-wide static layers.
+- [x] 3×3 chunked Overpass import for `lyon_full`
+- [x] `make pipeline` / `make pipeline-lyon` orchestrator + progress logs
+- [x] Priority zone seeding (Vieux Lyon, hills, bridge corridors)
+- [x] `make audit` city-wide quality report
+- [x] Lyon full import run — 209k features, 91.8% official heights
 
-- [ ] Run `make import-osm AREA=lyon_full` (may need chunked bbox or off-peak)
-- [ ] `make enrich-heights AREA=lyon_full` (BD TOPO paginated fetch)
-- [ ] `make precompute-directions AREA=lyon_full`
-- [ ] City-wide data quality audit (same tiers as pilot)
-- [ ] Priority zone detection: Vieux Lyon fabric, Fourvière/Croix-Rousse slopes, all major bridges
+### Phase B — Map performance (M9) — done
 
-**Exit:** Full Lyon explorable with honest quality report; weak areas flagged.
+- [x] `make generate-tiles` — base + per-direction exposure PMTiles
+- [x] API static serve `/tiles/{slug}/`
+- [x] Frontend PMTiles protocol + vector layers when tiles ready
+- [x] 16-direction precompute via `DIRECTIONS=16`
+- [x] Building exposure layer toggle
+- [x] Incremental tile swaps (direction / gust / confidence)
+- [x] Large-area scalar guard (409)
 
-### Phase B — Map performance (M9 tiles)
-
-**Goal:** Fast pan/zoom at city scale.
-
-- [ ] `make generate-tiles` — PMTiles for exposure + base geometry layers
-- [ ] Serve tiles from API or static CDN path
-- [ ] Frontend: PMTiles source instead of full GeoJSON per pan
-- [ ] Optional: 16-direction precompute if 8-dir interpolation is too coarse
-
-**Exit:** Direction switch &lt;1 s; layer load &lt;5 s for full Lyon viewport.
+**Tiles built:** `data/tiles/pilot_presquile/` (8 exposure + base), `data/tiles/lyon_full/` (16 exposure + base).
 
 ### Phase C — Terrain (M8 spike → metrics)
 
@@ -192,10 +216,10 @@ Ordered by dependency — see [docs/plans/2026-07-01-v05-implementation-plan.md]
 
 **Goal:** Shippable product surface.
 
-- [ ] Full Lyon default in area selector when imported
+- [x] Full Lyon default in area selector when imported
+- [x] Layer selector — confidence, special geometry, gust, building exposure toggles
 - [ ] Dedicated About accuracy page (limitations, confidence meaning, no-CFD claim)
 - [ ] Feedback UI polish (location pick, wind context)
-- [ ] Layer selector cleanup (confidence, special geometry, gust toggles)
 - [ ] Deploy staging (API + static frontend)
 
 **Exit:** Non-technical user can explore Lyon, understand limits, report issues.
@@ -206,7 +230,7 @@ Ordered by dependency — see [docs/plans/2026-07-01-v05-implementation-plan.md]
 
 - [ ] Grow sanity points toward 20–50 across priority zones
 - [ ] Benchmark dataset spike (one loaded case if accessible)
-- [ ] Re-run validation after M8/M9 pipeline on full Lyon
+- [ ] Re-run validation after full Lyon pipeline
 
 **Exit:** Documented accuracy on expanded point set; baselines still beat flat wind.
 
@@ -215,6 +239,7 @@ Ordered by dependency — see [docs/plans/2026-07-01-v05-implementation-plan.md]
 ## Suggested next command
 
 ```bash
-make enrich-heights AREA=pilot_presquile   # already run — re-run after re-import
-make import-osm AREA=lyon_full FORCE=1   # Phase A start (long; network)
+make dev                    # explore Lyon map (PMTiles mode)
+make validate               # pilot sanity check
+make pipeline-lyon          # re-run only if forcing re-import
 ```

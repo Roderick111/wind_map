@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from wind_track.db.connection import dumps_json, fetch_all, fetch_one, get_db, loads_json, utc_now
+from wind_track.services.db_retry import with_db_retry
 from wind_track.services.scoring.config import DEFAULT_SCALAR_CONFIG
 from wind_track.services.scoring.scalar import score_feature
 
@@ -48,19 +49,23 @@ async def run_scalar_scenario(
     now = utc_now()
 
     async with get_db() as conn:
-        cursor = await conn.execute(
-            """INSERT INTO scenario_runs
-               (area_id, data_version_id, model_version_id, scenario_type,
-                reference_wind_speed_ms, reference_wind_direction_deg, wind_gust_ms,
-                weather_observation_id, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
-            (
-                area["id"], data_version["id"], model_version["id"],
-                scenario_type, wind_speed_ms, wind_direction_deg, wind_gust_ms,
-                weather_observation_id, now,
-            ),
-        )
-        scenario_id = cursor.lastrowid
+
+        async def _insert_scenario() -> int:
+            cursor = await conn.execute(
+                """INSERT INTO scenario_runs
+                   (area_id, data_version_id, model_version_id, scenario_type,
+                    reference_wind_speed_ms, reference_wind_direction_deg, wind_gust_ms,
+                    weather_observation_id, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
+                (
+                    area["id"], data_version["id"], model_version["id"],
+                    scenario_type, wind_speed_ms, wind_direction_deg, wind_gust_ms,
+                    weather_observation_id, now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+        scenario_id = await with_db_retry(_insert_scenario, label="insert_scenario")
 
         features = await fetch_all(
             conn,

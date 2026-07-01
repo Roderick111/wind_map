@@ -12,6 +12,7 @@ from wind_track.db.connection import dumps_json, fetch_all, fetch_one, get_db, l
 from wind_track.models.schemas import (
     AreaResponse,
     DataQualityResponse,
+    TileManifestResponse,
     FeatureResultResponse,
     FeedbackRequest,
     FeedbackResponse,
@@ -24,6 +25,7 @@ from wind_track.models.schemas import (
     WeatherResponse,
 )
 from wind_track.services.directional_cache import cache_status, get_cached_exposure
+from wind_track.services.tiles.generate import tile_manifest
 from wind_track.services.precompute import precompute_directions
 from wind_track.services.validation.run import run_validation_case, seed_presquile_validation_case
 from wind_track.services.vector_export import export_vector_zone
@@ -89,7 +91,9 @@ async def area_summary(area_id: int) -> dict[str, Any]:
         by_type = {row["feature_type"]: row["c"] for row in counts}
         streets = by_type.get("street_segment", 0)
         area_row = await fetch_one(conn, "SELECT slug FROM areas WHERE id = ?", (area_id,))
-        cache = await cache_status(area_row["slug"]) if area_row else {"ready": False}
+        slug = area_row["slug"] if area_row else ""
+        cache = await cache_status(slug) if slug else {"ready": False}
+        tiles = tile_manifest(slug) if slug else {"ready": False}
         return {
             "area_id": area_id,
             "feature_count": sum(by_type.values()),
@@ -100,7 +104,16 @@ async def area_summary(area_id: int) -> dict[str, Any]:
             "needs_osm_import": streets < 50,
             "cache_ready": cache.get("ready", False),
             "cache_entries": cache.get("entry_count", 0),
+            "tiles_ready": tiles.get("ready", False),
+            "direction_count": cache.get("direction_count", 0),
         }
+
+
+@router.get("/areas/{area_slug}/tiles", response_model=TileManifestResponse)
+async def area_tiles(area_slug: str) -> TileManifestResponse:
+    """PMTiles manifest for map performance layer."""
+    manifest = tile_manifest(area_slug)
+    return TileManifestResponse(area_slug=area_slug, **manifest)
 
 
 @router.get("/areas/{area_slug}/exposure", response_model=list[FeatureResultResponse])
@@ -109,10 +122,18 @@ async def cached_exposure(
     direction_deg: float = Query(..., ge=0, le=360),
     wind_speed_ms: float = Query(8.0, ge=0, le=40),
     wind_gust_ms: float | None = Query(None, ge=0, le=60),
+    bbox: str | None = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
 ) -> list[FeatureResultResponse]:
     """Fast exposure lookup from directional precompute cache."""
     direction_deg = direction_deg % 360
-    results = await get_cached_exposure(area_slug, direction_deg, wind_speed_ms, wind_gust_ms)
+    parsed_bbox: tuple[float, float, float, float] | None = None
+    if bbox:
+        parts = [float(x.strip()) for x in bbox.split(",")]
+        if len(parts) == 4:
+            parsed_bbox = (parts[0], parts[1], parts[2], parts[3])
+    results = await get_cached_exposure(
+        area_slug, direction_deg, wind_speed_ms, wind_gust_ms, bbox=parsed_bbox,
+    )
     if results is None:
         raise HTTPException(
             404,
@@ -296,8 +317,27 @@ async def feature_explanation(
     return FeatureResultResponse(**result)
 
 
+LARGE_AREA_FEATURE_LIMIT = 10_000
+
+
 @router.post("/scenarios/scalar", response_model=ScenarioResponse)
 async def create_scalar_scenario(body: ScalarScenarioRequest) -> ScenarioResponse:
+    cache = await cache_status(body.area_slug)
+    if cache.get("ready"):
+        async with get_db() as conn:
+            area = await fetch_one(conn, "SELECT id FROM areas WHERE slug = ?", (body.area_slug,))
+            if area:
+                row = await fetch_one(
+                    conn,
+                    "SELECT COUNT(*) as c FROM spatial_features WHERE area_id = ?",
+                    (area["id"],),
+                )
+                if row and row["c"] > LARGE_AREA_FEATURE_LIMIT:
+                    raise HTTPException(
+                        409,
+                        "Area too large for live scoring — use GET /areas/{slug}/exposure "
+                        "or PMTiles map mode",
+                    )
     result = await run_scalar_scenario(
         body.area_slug,
         body.wind_speed_ms,

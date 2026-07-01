@@ -1,6 +1,30 @@
 """OSM normalization tests."""
 
-from wind_track.services.osm_normalize import classify_osm_element, dedupe_features
+from wind_track.services.osm_normalize import (
+    _parse_osm_number,
+    classify_osm_element,
+    dedupe_features,
+)
+
+
+def test_parse_osm_number_french_decimal():
+    assert _parse_osm_number("8,40 m") == 8.4
+    assert _parse_osm_number("12,5") == 12.5
+
+
+def test_classify_tunnel_french_width():
+    element = {
+        "type": "way",
+        "id": 99,
+        "geometry": [
+            {"lon": 4.84, "lat": 45.76},
+            {"lon": 4.841, "lat": 45.761},
+        ],
+        "tags": {"tunnel": "yes", "highway": "primary", "width": "8,40"},
+    }
+    feat = classify_osm_element(element)
+    assert feat is not None
+    assert feat["properties"]["width_m"] == 8.4
 
 
 def test_classify_street():

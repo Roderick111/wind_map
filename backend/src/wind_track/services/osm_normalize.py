@@ -10,6 +10,25 @@ from shapely.geometry import LineString
 from wind_track.services.geo import make_line, make_polygon
 from wind_track.services.quay_detect import is_quay_street
 
+def _parse_osm_number(raw: str | None, *, default: float | None = None) -> float | None:
+    """Parse OSM numeric tag (handles '8,40 m', '12', '3.5')."""
+    if raw is None:
+        return default
+    text = str(raw).strip().lower().replace("m", "").replace(" ", "")
+    if not text:
+        return default
+    if "," in text and "." not in text:
+        text = text.replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        head = text.split("-")[0].split(";")[0]
+        try:
+            return float(head)
+        except ValueError:
+            return default
+
+
 STREET_WIDTHS: dict[str, float] = {
     "motorway": 20,
     "trunk": 18,
@@ -31,23 +50,13 @@ def _coords_from_geometry(element: dict[str, Any]) -> list[tuple[float, float]]:
 
 
 def _building_height(tags: dict[str, str]) -> tuple[float, str, float]:
-    if "height" in tags:
-        raw = tags["height"].replace("m", "").strip()
-        try:
-            return float(raw), "osm_height", 0.85
-        except ValueError:
-            pass
-    if "building:height" in tags:
-        try:
-            return float(tags["building:height"].replace("m", "").strip()), "osm_height", 0.85
-        except ValueError:
-            pass
-    if "building:levels" in tags:
-        try:
-            levels = float(tags["building:levels"])
-            return levels * 3.0, "osm_levels", 0.65
-        except ValueError:
-            pass
+    for key in ("height", "building:height"):
+        h = _parse_osm_number(tags.get(key))
+        if h is not None and h > 0:
+            return h, "osm_height", 0.85
+    levels = _parse_osm_number(tags.get("building:levels"))
+    if levels is not None and levels > 0:
+        return levels * 3.0, "osm_levels", 0.65
     return 12.0, "fallback_default", 0.45
 
 
@@ -66,7 +75,7 @@ def classify_osm_element(element: dict[str, Any]) -> dict[str, Any] | None:
             return None
         return _feature(
             "tunnel", name, make_line(coords), tags,
-            {"width_m": float(tags["width"]) if tags.get("width") else 8},
+            {"width_m": _parse_osm_number(tags.get("width"), default=8.0)},
             subtype=tags.get("highway"),
             osm_id=osm_id,
         )
@@ -141,12 +150,7 @@ def classify_osm_element(element: dict[str, Any]) -> dict[str, Any] | None:
                 subtype=highway,
                 osm_id=osm_id,
             )
-        width = STREET_WIDTHS.get(highway, 8)
-        if tags.get("width"):
-            try:
-                width = float(str(tags["width"]).replace("m", "").strip())
-            except ValueError:
-                pass
+        width = _parse_osm_number(tags.get("width"), default=STREET_WIDTHS.get(highway, 8)) or 8
         return _feature(
             "street_segment", name, make_line(coords), tags,
             {

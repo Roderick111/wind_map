@@ -21,6 +21,7 @@ from wind_track.services.bdtopo_heights import fetch_bdtopo_buildings, match_bdt
 from wind_track.services.geo import geom_from_geojson
 from wind_track.services.metrics.batch import compute_metrics_for_area
 from wind_track.services.precompute import precompute_directions
+from wind_track.services.progress import log_step
 from wind_track.services.quay_detect import promote_quay_streets
 
 DATA_DIR = settings.db_path.parent
@@ -56,9 +57,12 @@ async def _fetch_bdtopo_matches(
     if area_slug not in AREA_DEFINITIONS:
         return {}, 0
     bbox = AREA_DEFINITIONS[area_slug]["bbox"]
+    log_step("fetching bdtopo", area=area_slug)
     try:
         bdtopo_features = await fetch_bdtopo_buildings(bbox)
-    except Exception:
+        log_step("bdtopo downloaded", features=len(bdtopo_features))
+    except Exception as exc:
+        log_step("bdtopo failed", error=str(exc))
         return {}, 0
     centroids = [
         (b["id"], geom_from_geojson(b["geom"]).centroid)
@@ -90,7 +94,9 @@ async def enrich_building_heights(
         area_id = area["id"]
         data_version_id = dv["id"] if dv else None
 
+    log_step("matching building heights", buildings=len(buildings))
     bdtopo_map, bdtopo_features = await _fetch_bdtopo_matches(area_slug, buildings)
+    log_step("bdtopo matched", updates=len(bdtopo_map))
 
     known: list[tuple[int, Point, float]] = []
     for b in buildings:

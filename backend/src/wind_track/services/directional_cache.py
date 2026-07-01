@@ -38,6 +38,25 @@ def scale_risk_score(
     return clamp(cached_risk * (new_factor / ref_factor), 0, 100)
 
 
+async def list_cached_directions(area_slug: str) -> list[int]:
+    """Return sorted direction bearings present in cache."""
+    versions = await get_active_versions(area_slug)
+    if not versions or not versions["data_version"] or not versions["model_version"]:
+        return []
+    area = versions["area"]
+    data_version = versions["data_version"]
+    model_version = versions["model_version"]
+    async with get_db() as conn:
+        rows = await fetch_all(
+            conn,
+            """SELECT DISTINCT direction_deg FROM directional_score_cache
+               WHERE area_id = ? AND data_version_id = ? AND model_version_id = ?
+               ORDER BY direction_deg""",
+            (area["id"], data_version["id"], model_version["id"]),
+        )
+    return [int(r["direction_deg"]) for r in rows]
+
+
 async def cache_status(area_slug: str) -> dict[str, Any]:
     """Return whether directional cache exists for an area."""
     versions = await get_active_versions(area_slug)
@@ -54,10 +73,12 @@ async def cache_status(area_slug: str) -> dict[str, Any]:
             (area["id"], data_version["id"], model_version["id"]),
         )
         count = row[0][0] if row else 0
+    cached_dirs = await list_cached_directions(area_slug)
     return {
         "ready": count > 0,
         "entry_count": count,
-        "directions": settings.precompute_directions,
+        "directions": cached_dirs or settings.precompute_directions,
+        "direction_count": len(cached_dirs),
         "reference_speed_ms": PRECOMPUTE_REF_SPEED_MS,
     }
 
@@ -67,6 +88,7 @@ async def get_cached_exposure(
     direction_deg: float,
     wind_speed_ms: float,
     wind_gust_ms: float | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Load exposure results from directional cache; None if cache empty."""
     status = await cache_status(area_slug)
@@ -81,19 +103,34 @@ async def get_cached_exposure(
     data_version = versions["data_version"]
     model_version = versions["model_version"]
     config = loads_json(model_version["config_json"], DEFAULT_SCALAR_CONFIG)
-    snapped = snap_direction(direction_deg)
+    cached_dirs = await list_cached_directions(area_slug)
+    snapped = snap_direction(direction_deg, cached_dirs or None)
+
+    bbox_sql = ""
+    bbox_params: tuple[float, ...] = ()
+    if bbox:
+        min_lon, min_lat, max_lon, max_lat = bbox
+        bbox_sql = """
+               AND f.id IN (
+                 SELECT id FROM spatial_features_rtree
+                 WHERE min_x <= ? AND max_x >= ? AND min_y <= ? AND max_y >= ?
+               )"""
+        bbox_params = (max_lon, min_lon, max_lat, min_lat)
 
     async with get_db() as conn:
         rows = await fetch_all(
             conn,
-            """SELECT c.*, f.feature_type, f.name, f.subtype, f.geom, m.handling_mode
+            f"""SELECT c.*, f.feature_type, f.name, f.subtype, f.geom, m.handling_mode
                FROM directional_score_cache c
                JOIN spatial_features f ON f.id = c.feature_id
                JOIN computed_feature_metrics m
                  ON m.feature_id = f.id AND m.data_version_id = c.data_version_id
                WHERE c.area_id = ? AND c.data_version_id = ? AND c.model_version_id = ?
-                 AND c.direction_deg = ?""",
-            (area["id"], data_version["id"], model_version["id"], snapped),
+                 AND c.direction_deg = ?{bbox_sql}""",
+            (
+                area["id"], data_version["id"], model_version["id"], snapped,
+                *bbox_params,
+            ),
         )
 
     if not rows:

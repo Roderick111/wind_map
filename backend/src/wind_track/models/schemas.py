@@ -23,6 +23,15 @@ class AreaResponse(BaseModel):
     active: bool
 
 
+class TileManifestResponse(BaseModel):
+    area_slug: str
+    ready: bool
+    base_pmtiles: bool
+    exposure_pmtiles: dict[str, bool]
+    tippecanoe_available: bool
+    tiles_path: str
+
+
 class DataQualityResponse(BaseModel):
     area_id: int
     building_count: int

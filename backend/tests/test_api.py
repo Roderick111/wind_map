@@ -4,7 +4,17 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from wind_track.main import app
+from wind_track.services.precompute import precompute_directions
 from wind_track.services.seed import seed_database
+
+
+@pytest.fixture
+async def client_with_cache():
+    await seed_database()
+    await precompute_directions("synthetic_test")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
 
 
 @pytest.fixture
@@ -70,6 +80,38 @@ async def test_data_quality_height_tiers(client: AsyncClient):
         + data["fallback_height_coverage"]
     )
     assert total <= 1.01
+
+
+@pytest.mark.asyncio
+async def test_tile_manifest_endpoint(client: AsyncClient):
+    areas = (await client.get("/areas")).json()
+    area = next(a for a in areas if a["slug"] == "synthetic_test")
+    resp = await client.get(f"/areas/{area['slug']}/tiles")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["area_slug"] == "synthetic_test"
+    assert "ready" in data
+
+
+@pytest.mark.asyncio
+async def test_scalar_rejected_when_cache_ready_and_area_large(
+    client_with_cache: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from wind_track.api import routes
+
+    monkeypatch.setattr(routes, "LARGE_AREA_FEATURE_LIMIT", 1)
+    resp = await client_with_cache.post(
+        "/scenarios/scalar",
+        json={
+            "area_slug": "synthetic_test",
+            "wind_speed_ms": 10,
+            "wind_direction_deg": 90,
+            "scenario_type": "manual",
+        },
+    )
+    assert resp.status_code == 409
+    assert "too large" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ import {
   getAreaSummary,
   getAreas,
   getCachedExposure,
+  getTileManifest,
   getCurrentWeather,
   getForecastWeather,
   getDataQuality,
@@ -16,8 +17,9 @@ import {
   submitFeedback,
 } from "./api/client";
 import { filterMapResults } from "./lib/mapFeatures";
-import { normalizeDirectionDeg, roundSpeedMs } from "./lib/wind";
-import type { Area, DataQuality, FeatureResult, Weather } from "./api/schemas";
+import { canUseTileMode, tileDirectionsFromManifest } from "./lib/tiles";
+import { normalizeDirectionDeg, roundSpeedMs, snapDirection } from "./lib/wind";
+import type { Area, DataQuality, FeatureResult, TileManifest, Weather } from "./api/schemas";
 import { DataQualityPanel } from "./components/DataQualityPanel";
 import { ValidationPanel } from "./components/ValidationPanel";
 import { ExplanationPanel } from "./components/ExplanationPanel";
@@ -51,13 +53,19 @@ export default function App() {
   const [showConfidence, setShowConfidence] = useState(true);
   const [showSpecial, setShowSpecial] = useState(true);
   const [showGust, setShowGust] = useState(false);
+  const [showBuildingExposure, setShowBuildingExposure] = useState(false);
   const [showVectorZones, setShowVectorZones] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
+  const [areaMetaReady, setAreaMetaReady] = useState(false);
   const [quality, setQuality] = useState<DataQuality | null>(null);
   const [qualityLoading, setQualityLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needsImport, setNeedsImport] = useState(false);
   const [cacheReady, setCacheReady] = useState(false);
+  const [tilesReady, setTilesReady] = useState(false);
+  const [tileManifest, setTileManifest] = useState<TileManifest | null>(null);
+  const [useTileLayers, setUseTileLayers] = useState(false);
+  const [tileDirection, setTileDirection] = useState<number | null>(null);
   const [cacheDirection, setCacheDirection] = useState<number | null>(null);
   const [windGustMs, setWindGustMs] = useState<number | null>(null);
   const [areas, setAreas] = useState<Area[]>([]);
@@ -72,37 +80,78 @@ export default function App() {
 
   const areaRef = useRef<Area | null>(null);
   const cacheReadyRef = useRef(false);
+  const tilesReadyRef = useRef(false);
   const directionRef = useRef(direction);
   const speedRef = useRef(speed);
   const forecastsRef = useRef<Weather[]>([]);
   const weatherRefreshAtRef = useRef(0);
   const exposureRequestRef = useRef(0);
+  const tileManifestRef = useRef<TileManifest | null>(null);
 
   useEffect(() => { areaRef.current = area; }, [area]);
   useEffect(() => { cacheReadyRef.current = cacheReady; }, [cacheReady]);
+  useEffect(() => { tilesReadyRef.current = tilesReady; }, [tilesReady]);
   useEffect(() => { directionRef.current = direction; }, [direction]);
   useEffect(() => { speedRef.current = speed; }, [speed]);
+  useEffect(() => { tileManifestRef.current = tileManifest; }, [tileManifest]);
 
   useEffect(() => {
     getAreas().then((list) => {
       setAreas(list);
-      const pilot = list.find((a) => a.slug === "pilot_presquile") ?? list[0];
-      setArea(pilot ?? null);
+      const preferred = list.find((a) => a.slug === "lyon_full")
+        ?? list.find((a) => a.slug === "pilot_presquile")
+        ?? list[0];
+      setArea(preferred ?? null);
     }).catch((e) => setError(String(e)));
   }, []);
 
   useEffect(() => {
-    if (!area) return;
-    getAreaLayers(area.id).then((layers) => setVectorZones(layers.vector_zones));
-    getAreaSummary(area.id)
-      .then((s) => {
-        setNeedsImport(s.needs_osm_import);
-        setCacheReady(s.cache_ready);
-      })
-      .catch(() => {
-        setNeedsImport(false);
-        setCacheReady(false);
-      });
+    if (!area) {
+      setAreaMetaReady(false);
+      return;
+    }
+
+    let cancelled = false;
+    setAreaMetaReady(false);
+    setTileManifest(null);
+    setUseTileLayers(false);
+    setTileDirection(null);
+    setCacheDirection(null);
+    setResults([]);
+    setShowBuildingExposure(false);
+    if (area.slug === "lyon_full") {
+      setShowVectorZones(false);
+      setShowLabels(false);
+    } else {
+      setShowVectorZones(true);
+      setShowLabels(true);
+    }
+
+    void Promise.all([
+      getAreaLayers(area.id).then((layers) => {
+        if (!cancelled) setVectorZones(layers.vector_zones);
+      }),
+      getTileManifest(area.slug)
+        .then((manifest) => { if (!cancelled) setTileManifest(manifest); })
+        .catch(() => { if (!cancelled) setTileManifest(null); }),
+      getAreaSummary(area.id)
+        .then((s) => {
+          if (cancelled) return;
+          setNeedsImport(s.needs_osm_import);
+          setCacheReady(s.cache_ready);
+          setTilesReady(s.tiles_ready ?? false);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setNeedsImport(false);
+          setCacheReady(false);
+          setTilesReady(false);
+        }),
+    ]).finally(() => {
+      if (!cancelled) setAreaMetaReady(true);
+    });
+
+    return () => { cancelled = true; };
   }, [area]);
 
   useEffect(() => {
@@ -197,6 +246,20 @@ export default function App() {
       }
 
       if (useCache) {
+        const manifest = tileManifestRef.current;
+        const tileDirs = tileDirectionsFromManifest(manifest);
+        if (canUseTileMode(manifest, tilesReadyRef.current)) {
+          const snapped = snapDirection(resolvedDir, tileDirs);
+          if (requestId !== exposureRequestRef.current) return;
+          setUseTileLayers(true);
+          setTileDirection(snapped);
+          setCacheDirection(snapped);
+          setResults([]);
+          setScenarioId(null);
+          return;
+        }
+        setUseTileLayers(false);
+        setTileDirection(null);
         try {
           const res = await getCachedExposure(
             currentArea.slug,
@@ -212,9 +275,13 @@ export default function App() {
         } catch (e) {
           const msg = String(e);
           if (!msg.includes("404")) throw e;
-          if (requestId !== exposureRequestRef.current) return;
-          setResults([]);
         }
+        if (requestId !== exposureRequestRef.current) return;
+        setResults([]);
+        setError(
+          "Exposure cache miss for this wind — try another direction or wait for tiles",
+        );
+        return;
       }
 
       const scenario = await createScenario({
@@ -252,22 +319,32 @@ export default function App() {
   }, [mode]);
 
   useEffect(() => {
-    if (!area || mode !== "manual") return;
+    if (!area || !areaMetaReady || mode !== "manual") return;
+
+    const manifest = tileManifestRef.current;
+    const tileDirs = tileDirectionsFromManifest(manifest);
+    if (useTileLayers && tileDirs.length > 0) {
+      const snapped = snapDirection(direction, tileDirs);
+      setTileDirection(snapped);
+      setCacheDirection(snapped);
+      return;
+    }
+
     const timer = setTimeout(() => {
       void loadExposure("manual");
     }, 400);
     return () => clearTimeout(timer);
-  }, [area, mode, direction, speed, loadExposure]);
+  }, [area, areaMetaReady, mode, direction, speed, useTileLayers, loadExposure]);
 
   useEffect(() => {
-    if (!area || mode !== "current") return;
+    if (!area || !areaMetaReady || mode !== "current") return;
     void loadExposure("current", 0, true);
-  }, [area, mode, loadExposure]);
+  }, [area, areaMetaReady, mode, loadExposure]);
 
   useEffect(() => {
-    if (!area || mode !== "forecast") return;
+    if (!area || !areaMetaReady || mode !== "forecast") return;
     void loadExposure("forecast", forecastHour, false);
-  }, [area, mode, forecastHour, loadExposure]);
+  }, [area, areaMetaReady, mode, forecastHour, loadExposure]);
 
   useEffect(() => {
     if (!area || mode !== "current") return;
@@ -278,9 +355,9 @@ export default function App() {
   }, [area, mode, loadExposure]);
 
   useEffect(() => {
-    if (!area || !cacheReady) return;
+    if (!area || !areaMetaReady || !cacheReady) return;
     void loadExposure(mode === "manual" ? "manual" : mode, forecastHour, false);
-  }, [cacheReady]); // eslint-disable-line react-hooks/exhaustive-deps -- reload once when cache becomes ready
+  }, [cacheReady, areaMetaReady]); // eslint-disable-line react-hooks/exhaustive-deps -- reload once when cache becomes ready
 
   const handleRunValidation = async () => {
     if (!area) return;
@@ -398,11 +475,13 @@ export default function App() {
           showConfidence={showConfidence}
           showSpecial={showSpecial}
           showGust={showGust}
+          showBuildingExposure={showBuildingExposure}
           showVectorZones={showVectorZones}
           showLabels={showLabels}
           onToggleConfidence={() => setShowConfidence((v) => !v)}
           onToggleSpecial={() => setShowSpecial((v) => !v)}
           onToggleGust={() => setShowGust((v) => !v)}
+          onToggleBuildingExposure={() => setShowBuildingExposure((v) => !v)}
           onToggleVectorZones={() => setShowVectorZones((v) => !v)}
           onToggleLabels={() => setShowLabels((v) => !v)}
         />
@@ -433,13 +512,18 @@ export default function App() {
         <MapView
           center={[area.center_lon, area.center_lat]}
           zoom={area.default_zoom}
+          areaSlug={area.slug}
           results={filterMapResults(results)}
           vectorZones={vectorZones}
           showConfidence={showConfidence}
           showSpecial={showSpecial}
           showGust={showGust}
+          showBuildingExposure={showBuildingExposure}
           showVectorZones={showVectorZones}
           showLabels={showLabels}
+          useTileLayers={useTileLayers}
+          tileDirection={tileDirection}
+          tileBaseReady={tileManifest?.base_pmtiles ?? false}
           selectedId={selected?.feature_id ?? null}
           onSelect={setSelected}
         />

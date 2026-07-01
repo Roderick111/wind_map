@@ -6,6 +6,7 @@ from wind_track.config.settings import settings
 from wind_track.db.connection import dumps_json, fetch_all, get_db, loads_json, utc_now
 from wind_track.services.scenarios import get_active_versions
 from wind_track.services.scoring.config import DEFAULT_SCALAR_CONFIG
+from wind_track.services.progress import log_step
 from wind_track.services.scoring.scalar import score_feature
 
 
@@ -37,7 +38,13 @@ async def precompute_directions(
             (area["id"], data_version["id"]),
         )
 
-        for direction in dirs:
+        log_step("precompute features loaded", count=len(features), directions=len(dirs))
+        for idx, direction in enumerate(dirs):
+            log_step(
+                "precompute direction",
+                bearing=direction,
+                progress=f"{idx + 1}/{len(dirs)}",
+            )
             for feat in features:
                 metrics = {
                     "orientation_deg": feat.get("orientation_deg"),

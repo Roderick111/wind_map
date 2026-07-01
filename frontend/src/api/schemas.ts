@@ -69,6 +69,15 @@ export const WeatherSchema = z.object({
   forecast_timestamp: z.string().nullable().optional(),
 }).strict();
 
+export const TileManifestSchema = z.object({
+  area_slug: z.string(),
+  ready: z.boolean(),
+  base_pmtiles: z.boolean(),
+  exposure_pmtiles: z.record(z.string(), z.boolean()),
+  tippecanoe_available: z.boolean(),
+  tiles_path: z.string(),
+}).strict();
+
 export const DataQualitySchema = z.object({
   area_id: z.number(),
   building_count: z.number(),
@@ -82,6 +91,7 @@ export const DataQualitySchema = z.object({
   low_confidence_count: z.number(),
 }).strict();
 
+export type TileManifest = z.infer<typeof TileManifestSchema>;
 export type Area = z.infer<typeof AreaSchema>;
 export type DataQuality = z.infer<typeof DataQualitySchema>;
 export type Scenario = z.infer<typeof ScenarioSchema>;
