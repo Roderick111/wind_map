@@ -4,7 +4,6 @@ import {
   getAreaSummary,
   getAreas,
   getCachedExposure,
-  getFlowIndicators,
   getTileManifest,
   getCurrentWeather,
   getForecastWeather,
@@ -19,7 +18,7 @@ import {
 import { filterMapResults } from "./lib/mapFeatures";
 import { canUseTileMode, tileDirectionsFromManifest } from "./lib/tiles";
 import { normalizeDirectionDeg, roundSpeedMs, snapDirection } from "./lib/wind";
-import type { Area, DataQuality, FeatureResult, FlowIndicator, TileManifest, Weather } from "./api/schemas";
+import type { Area, DataQuality, FeatureResult, TileManifest, Weather } from "./api/schemas";
 import { DataQualityPanel } from "./components/DataQualityPanel";
 import { ValidationPanel } from "./components/ValidationPanel";
 import { ExplanationPanel } from "./components/ExplanationPanel";
@@ -49,7 +48,6 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>("map");
   const [mapViewMode, setMapViewMode] = useState<MapViewMode>("exposure");
-  const [flowIndicators, setFlowIndicators] = useState<FlowIndicator[]>([]);
   const [showLabels, setShowLabels] = useState(true);
   const [areaMetaReady, setAreaMetaReady] = useState(false);
   const [quality, setQuality] = useState<DataQuality | null>(null);
@@ -348,18 +346,6 @@ export default function App() {
     void loadExposure(mode === "manual" ? "manual" : mode, forecastHour, false);
   }, [cacheReady, areaMetaReady]); // eslint-disable-line react-hooks/exhaustive-deps -- reload once when cache becomes ready
 
-  useEffect(() => {
-    if (!area || !cacheReady || mapViewMode !== "flow" || useTileLayers) {
-      setFlowIndicators([]);
-      return;
-    }
-    let cancelled = false;
-    void getFlowIndicators(area.slug, direction, speed, windGustMs)
-      .then((rows) => { if (!cancelled) setFlowIndicators(rows); })
-      .catch(() => { if (!cancelled) setFlowIndicators([]); });
-    return () => { cancelled = true; };
-  }, [area, cacheReady, mapViewMode, direction, speed, windGustMs, useTileLayers]);
-
   const handleRunValidation = async () => {
     if (!area) return;
     setValidationLoading(true);
@@ -509,7 +495,7 @@ export default function App() {
             areaSlug={area.slug}
             results={filterMapResults(results)}
             mapViewMode={mapViewMode}
-            flowIndicators={flowIndicators}
+            windDirectionDeg={direction}
             showLabels={showLabels}
             useTileLayers={useTileLayers}
             tileDirection={tileDirection}

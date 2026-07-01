@@ -49,7 +49,7 @@ export function LayerMenu({
         Street labels
       </label>
       <p className="layer-note">
-        Flow view replaces colored streets with arrows along corridors. Screening estimate — not CFD.
+        Flow view replaces colors with smooth streaks moving along streets. Screening estimate — not CFD.
       </p>
     </div>
   );

@@ -12,7 +12,7 @@ export function Legend({ mapViewMode }: Props) {
     return (
       <div className="legend">
         <h3>Flow on streets</h3>
-        <p className="legend-hint">Arrows run along street centerlines in likely flow direction.</p>
+        <p className="legend-hint">Soft streaks drift along street centerlines in the wind-aligned direction.</p>
         <ul>
           {CLASSES.map((cls) => (
             <li key={cls}>
