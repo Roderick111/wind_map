@@ -92,6 +92,12 @@ input[type="range"] { width: 100%; }
 .layer-title { font-weight: 600; font-size: 0.85rem; }
 .layer-menu label { flex-direction: row; align-items: center; gap: 0.5rem; }
 .layer-menu .layer-disabled { opacity: 0.55; cursor: not-allowed; }
+.layer-menu .layer-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  color: #94a3b8;
+  line-height: 1.35;
+}
 
 .live-wind {
   margin: 0;

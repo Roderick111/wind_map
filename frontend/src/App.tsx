@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createScenario,
-  getAreaLayers,
   getAreaSummary,
   getAreas,
   getCachedExposure,
@@ -18,13 +17,13 @@ import {
   submitFeedback,
 } from "./api/client";
 import { filterMapResults } from "./lib/mapFeatures";
-import { canUseTileMode, flowTilesReady, tileDirectionsFromManifest } from "./lib/tiles";
+import { canUseTileMode, tileDirectionsFromManifest } from "./lib/tiles";
 import { normalizeDirectionDeg, roundSpeedMs, snapDirection } from "./lib/wind";
 import type { Area, DataQuality, FeatureResult, FlowIndicator, TileManifest, Weather } from "./api/schemas";
 import { DataQualityPanel } from "./components/DataQualityPanel";
 import { ValidationPanel } from "./components/ValidationPanel";
 import { ExplanationPanel } from "./components/ExplanationPanel";
-import { LayerMenu } from "./components/LayerMenu";
+import { LayerMenu, type MapViewMode } from "./components/LayerMenu";
 import { Legend } from "./components/Legend";
 import { MapView } from "./components/MapView";
 import { WindFlowOverlay } from "./components/WindFlowOverlay";
@@ -46,28 +45,11 @@ export default function App() {
   const [forecastTimestamp, setForecastTimestamp] = useState<string | null>(null);
   const [, setScenarioId] = useState<number | null>(null);
   const [results, setResults] = useState<FeatureResult[]>([]);
-  const [vectorZones, setVectorZones] = useState<
-    {
-      id: number;
-      name: string;
-      zone_type: string;
-      status: string;
-      vector_field_available: boolean;
-      boundary: GeoJSON.Geometry;
-    }[]
-  >([]);
   const [selected, setSelected] = useState<FeatureResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>("map");
-  const [showConfidence, setShowConfidence] = useState(true);
-  const [showSpecial, setShowSpecial] = useState(true);
-  const [showGust, setShowGust] = useState(false);
-  const [showWindExposure, setShowWindExposure] = useState(true);
-  const [showBuildingExposure, setShowBuildingExposure] = useState(false);
-  const [showFlowInterpretation, setShowFlowInterpretation] = useState(false);
-  const [showFlowAnimation, setShowFlowAnimation] = useState(false);
+  const [mapViewMode, setMapViewMode] = useState<MapViewMode>("exposure");
   const [flowIndicators, setFlowIndicators] = useState<FlowIndicator[]>([]);
-  const [showVectorZones, setShowVectorZones] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
   const [areaMetaReady, setAreaMetaReady] = useState(false);
   const [quality, setQuality] = useState<DataQuality | null>(null);
@@ -131,19 +113,13 @@ export default function App() {
     setTileDirection(null);
     setCacheDirection(null);
     setResults([]);
-    setShowBuildingExposure(false);
     if (area.slug === "lyon_full") {
-      setShowVectorZones(false);
       setShowLabels(false);
     } else {
-      setShowVectorZones(true);
       setShowLabels(true);
     }
 
     void Promise.all([
-      getAreaLayers(area.id).then((layers) => {
-        if (!cancelled) setVectorZones(layers.vector_zones);
-      }),
       getTileManifest(area.slug)
         .then((manifest) => { if (!cancelled) setTileManifest(manifest); })
         .catch(() => { if (!cancelled) setTileManifest(null); }),
@@ -372,11 +348,8 @@ export default function App() {
     void loadExposure(mode === "manual" ? "manual" : mode, forecastHour, false);
   }, [cacheReady, areaMetaReady]); // eslint-disable-line react-hooks/exhaustive-deps -- reload once when cache becomes ready
 
-  const useFlowTileLayer = useTileLayers && flowTilesReady(tileManifest, tileDirection);
-  const needsFlowData = showFlowInterpretation || showFlowAnimation;
-
   useEffect(() => {
-    if (!area || !cacheReady || !needsFlowData || useFlowTileLayer) {
+    if (!area || !cacheReady || mapViewMode !== "flow" || useTileLayers) {
       setFlowIndicators([]);
       return;
     }
@@ -385,9 +358,7 @@ export default function App() {
       .then((rows) => { if (!cancelled) setFlowIndicators(rows); })
       .catch(() => { if (!cancelled) setFlowIndicators([]); });
     return () => { cancelled = true; };
-  }, [area, cacheReady, needsFlowData, direction, speed, windGustMs, useFlowTileLayer]);
-
-  const vectorFieldAvailable = vectorZones.some((z) => z.vector_field_available);
+  }, [area, cacheReady, mapViewMode, direction, speed, windGustMs, useTileLayers]);
 
   const handleRunValidation = async () => {
     if (!area) return;
@@ -502,38 +473,12 @@ export default function App() {
           onForecastHourChange={setForecastHour}
         />
         <LayerMenu
-          showWindExposure={showWindExposure}
-          showConfidence={showConfidence}
-          showSpecial={showSpecial}
-          showGust={showGust}
-          showBuildingExposure={showBuildingExposure}
-          showFlowInterpretation={showFlowInterpretation}
-          showFlowAnimation={showFlowAnimation}
-          vectorFieldAvailable={vectorFieldAvailable}
-          pedestrianLayerAvailable={false}
-          showVectorZones={showVectorZones}
+          mapViewMode={mapViewMode}
           showLabels={showLabels}
-          onToggleWindExposure={() => setShowWindExposure((v) => !v)}
-          onToggleConfidence={() => setShowConfidence((v) => !v)}
-          onToggleSpecial={() => setShowSpecial((v) => !v)}
-          onToggleGust={() => setShowGust((v) => !v)}
-          onToggleBuildingExposure={() => setShowBuildingExposure((v) => !v)}
-          onToggleFlowInterpretation={() => setShowFlowInterpretation((v) => !v)}
-          onToggleFlowAnimation={() => {
-            setShowFlowAnimation((on) => {
-              const next = !on;
-              if (next) setShowFlowInterpretation(true);
-              return next;
-            });
-          }}
-          onToggleVectorZones={() => setShowVectorZones((v) => !v)}
+          onMapViewModeChange={setMapViewMode}
           onToggleLabels={() => setShowLabels((v) => !v)}
         />
-        <Legend
-          showGust={showGust}
-          showWindExposure={showWindExposure}
-          showFlowAnimation={showFlowAnimation}
-        />
+        <Legend mapViewMode={mapViewMode} />
         {needsImport && (
           <p className="import-warning">
             Synthetic test data only. Run <code>make import-osm</code> in terminal for real Lyon streets.
@@ -563,22 +508,12 @@ export default function App() {
             zoom={area.default_zoom}
             areaSlug={area.slug}
             results={filterMapResults(results)}
-            vectorZones={vectorZones}
-            showConfidence={showConfidence}
-            showSpecial={showSpecial}
-            showGust={showGust}
-            showBuildingExposure={showBuildingExposure}
-            showWindExposure={showWindExposure}
-            showFlowInterpretation={showFlowInterpretation}
-            showFlowAnimation={showFlowAnimation}
-            windDirectionDeg={direction}
+            mapViewMode={mapViewMode}
             flowIndicators={flowIndicators}
-            showVectorZones={showVectorZones}
             showLabels={showLabels}
             useTileLayers={useTileLayers}
             tileDirection={tileDirection}
             tileBaseReady={tileManifest?.base_pmtiles ?? false}
-            flowTilesReady={useFlowTileLayer}
             selectedId={selected?.feature_id ?? null}
             onSelect={setSelected}
           />
@@ -587,7 +522,7 @@ export default function App() {
             speed={speed}
             gustMs={windGustMs}
             cacheDirection={cacheDirection}
-            visible={showFlowInterpretation || showFlowAnimation}
+            visible={mapViewMode === "flow"}
           />
         </div>
       )}
