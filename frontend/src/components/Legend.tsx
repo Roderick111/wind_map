@@ -4,9 +4,29 @@ const CLASSES = ["low", "medium", "high", "very_high"] as const;
 
 type Props = {
   showGust: boolean;
+  showWindExposure: boolean;
+  showFlowAnimation: boolean;
 };
 
-export function Legend({ showGust }: Props) {
+export function Legend({ showGust, showWindExposure, showFlowAnimation }: Props) {
+  if (!showWindExposure && showFlowAnimation) {
+    return (
+      <div className="legend">
+        <h3>Flow animation</h3>
+        <p className="legend-hint">Animated streaks show likely flow direction. Screening estimate — not CFD.</p>
+      </div>
+    );
+  }
+
+  if (!showWindExposure) {
+    return (
+      <div className="legend">
+        <h3>Base map</h3>
+        <p className="legend-hint">Wind exposure layer is off. Enable Flow interpretation or Flow animation.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="legend">
       <h3>Wind exposure</h3>

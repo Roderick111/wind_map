@@ -62,8 +62,10 @@ export default function App() {
   const [showConfidence, setShowConfidence] = useState(true);
   const [showSpecial, setShowSpecial] = useState(true);
   const [showGust, setShowGust] = useState(false);
+  const [showWindExposure, setShowWindExposure] = useState(true);
   const [showBuildingExposure, setShowBuildingExposure] = useState(false);
   const [showFlowInterpretation, setShowFlowInterpretation] = useState(false);
+  const [showFlowAnimation, setShowFlowAnimation] = useState(false);
   const [flowIndicators, setFlowIndicators] = useState<FlowIndicator[]>([]);
   const [showVectorZones, setShowVectorZones] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
@@ -371,9 +373,10 @@ export default function App() {
   }, [cacheReady, areaMetaReady]); // eslint-disable-line react-hooks/exhaustive-deps -- reload once when cache becomes ready
 
   const useFlowTileLayer = useTileLayers && flowTilesReady(tileManifest, tileDirection);
+  const needsFlowData = showFlowInterpretation || showFlowAnimation;
 
   useEffect(() => {
-    if (!area || !cacheReady || !showFlowInterpretation || useFlowTileLayer) {
+    if (!area || !cacheReady || !needsFlowData || useFlowTileLayer) {
       setFlowIndicators([]);
       return;
     }
@@ -382,7 +385,7 @@ export default function App() {
       .then((rows) => { if (!cancelled) setFlowIndicators(rows); })
       .catch(() => { if (!cancelled) setFlowIndicators([]); });
     return () => { cancelled = true; };
-  }, [area, cacheReady, showFlowInterpretation, direction, speed, windGustMs, useFlowTileLayer]);
+  }, [area, cacheReady, needsFlowData, direction, speed, windGustMs, useFlowTileLayer]);
 
   const vectorFieldAvailable = vectorZones.some((z) => z.vector_field_available);
 
@@ -499,23 +502,38 @@ export default function App() {
           onForecastHourChange={setForecastHour}
         />
         <LayerMenu
+          showWindExposure={showWindExposure}
           showConfidence={showConfidence}
           showSpecial={showSpecial}
           showGust={showGust}
           showBuildingExposure={showBuildingExposure}
           showFlowInterpretation={showFlowInterpretation}
+          showFlowAnimation={showFlowAnimation}
           vectorFieldAvailable={vectorFieldAvailable}
+          pedestrianLayerAvailable={false}
           showVectorZones={showVectorZones}
           showLabels={showLabels}
+          onToggleWindExposure={() => setShowWindExposure((v) => !v)}
           onToggleConfidence={() => setShowConfidence((v) => !v)}
           onToggleSpecial={() => setShowSpecial((v) => !v)}
           onToggleGust={() => setShowGust((v) => !v)}
           onToggleBuildingExposure={() => setShowBuildingExposure((v) => !v)}
           onToggleFlowInterpretation={() => setShowFlowInterpretation((v) => !v)}
+          onToggleFlowAnimation={() => {
+            setShowFlowAnimation((on) => {
+              const next = !on;
+              if (next) setShowFlowInterpretation(true);
+              return next;
+            });
+          }}
           onToggleVectorZones={() => setShowVectorZones((v) => !v)}
           onToggleLabels={() => setShowLabels((v) => !v)}
         />
-        <Legend showGust={showGust} />
+        <Legend
+          showGust={showGust}
+          showWindExposure={showWindExposure}
+          showFlowAnimation={showFlowAnimation}
+        />
         {needsImport && (
           <p className="import-warning">
             Synthetic test data only. Run <code>make import-osm</code> in terminal for real Lyon streets.
@@ -550,7 +568,10 @@ export default function App() {
             showSpecial={showSpecial}
             showGust={showGust}
             showBuildingExposure={showBuildingExposure}
+            showWindExposure={showWindExposure}
             showFlowInterpretation={showFlowInterpretation}
+            showFlowAnimation={showFlowAnimation}
+            windDirectionDeg={direction}
             flowIndicators={flowIndicators}
             showVectorZones={showVectorZones}
             showLabels={showLabels}
@@ -566,7 +587,7 @@ export default function App() {
             speed={speed}
             gustMs={windGustMs}
             cacheDirection={cacheDirection}
-            visible={showFlowInterpretation}
+            visible={showFlowInterpretation || showFlowAnimation}
           />
         </div>
       )}

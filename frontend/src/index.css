@@ -155,10 +155,26 @@ input[type="range"] { width: 100%; }
   height: 100%;
 }
 
+.map-stack {
+  position: relative;
+  width: 100%;
+  min-height: 0;
+  height: 100%;
+}
+
 .map-container {
   width: 100%;
   min-height: 0;
   height: 100%;
+}
+
+.flow-animation-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
 }
 
 .wind-flow-overlay {

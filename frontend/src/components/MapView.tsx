@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import type { FeatureResult, FlowIndicator } from "../api/schemas";
 import { confidenceOpacity, exposureColor } from "../lib/exposure";
 import { ensurePmtilesProtocol, EXPOSURE_COLOR_EXPR, pmtilesUrl } from "../lib/pmtiles";
+import { FlowAnimationCanvas } from "./FlowAnimationCanvas";
 
 type VectorZone = {
   id: number;
@@ -22,7 +23,10 @@ type Props = {
   showSpecial: boolean;
   showGust: boolean;
   showBuildingExposure: boolean;
+  showWindExposure: boolean;
   showFlowInterpretation: boolean;
+  showFlowAnimation: boolean;
+  windDirectionDeg: number;
   flowIndicators: FlowIndicator[];
   showVectorZones: boolean;
   showLabels: boolean;
@@ -232,7 +236,10 @@ export function MapView({
   showSpecial,
   showGust,
   showBuildingExposure,
+  showWindExposure,
   showFlowInterpretation,
+  showFlowAnimation,
+  windDirectionDeg,
   flowIndicators,
   showVectorZones,
   showLabels,
@@ -245,6 +252,9 @@ export function MapView({
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const [mapInstance, setMapInstance] = useState<maplibregl.Map | null>(null);
+  const showWindExposureRef = useRef(showWindExposure);
+  showWindExposureRef.current = showWindExposure;
   const resultsRef = useRef(results);
   const onSelectRef = useRef(onSelect);
   const tileClickRef = useRef<(
@@ -425,6 +435,12 @@ export function MapView({
     });
   }, []);
 
+  const applyWindExposureVisibility = useCallback((map: maplibregl.Map) => {
+    const visible = showWindExposureRef.current;
+    setLayerVisibility(map, GEOJSON_LAYERS, visible);
+    setLayerVisibility(map, EXPOSURE_TILE_LAYERS, visible);
+  }, []);
+
   const performSyncTileMode = useCallback((map: maplibregl.Map) => {
     if (!areaSlug) return;
 
@@ -432,7 +448,7 @@ export function MapView({
       removeAllPmtiles(map);
       exposureDirRef.current = null;
       flowDirRef.current = null;
-      setLayerVisibility(map, GEOJSON_LAYERS, true);
+      applyWindExposureVisibility(map);
       applyFlowDataRef.current(map);
       return;
     }
@@ -448,8 +464,13 @@ export function MapView({
 
     const dirChanged = exposureDirRef.current !== tileDirection;
     const hasExposureLayers = Boolean(map.getLayer("exposure-pmtiles-fill"));
-    const needsExposure = !map.getSource("exposure-pmtiles") || dirChanged || !hasExposureLayers;
-    if (needsExposure) {
+    const needsExposure = showWindExposureRef.current && (
+      !map.getSource("exposure-pmtiles") || dirChanged || !hasExposureLayers
+    );
+    if (!showWindExposureRef.current) {
+      removeExposureTileLayers(map);
+      exposureDirRef.current = null;
+    } else if (needsExposure) {
       removeExposureTileLayers(map);
       addExposureTileLayers(
         map,
@@ -461,6 +482,7 @@ export function MapView({
       );
     } else {
       applyExposureTileStyle(map, showConfidence, showGust, showBuildingExposure);
+      setLayerVisibility(map, EXPOSURE_TILE_LAYERS, true);
     }
 
     const flowDirChanged = flowDirRef.current !== tileDirection;
@@ -474,11 +496,13 @@ export function MapView({
       removeFlowTileLayers(map);
       flowDirRef.current = null;
     }
+    applyWindExposureVisibility(map);
     applyFlowDataRef.current(map);
   }, [
     addExposureTileLayers,
     addFlowTileLayers,
     applyExposureTileStyle,
+    applyWindExposureVisibility,
     areaSlug,
     ensureBaseTileLayer,
     flowTilesReady,
@@ -513,7 +537,7 @@ export function MapView({
   }, []);
 
   const applyFlowData = useCallback((map: maplibregl.Map) => {
-    const visible = showFlowInterpretation;
+    const visible = showFlowInterpretation || showFlowAnimation;
     const useFlowTiles = useTileLayers && flowTilesReady && tileDirection != null;
 
     if (map.getLayer("flow-arrow-symbols")) {
@@ -539,7 +563,7 @@ export function MapView({
     }
     src.setData(flowIndicatorsToGeoJSON(flowIndicatorsRef.current, selectedIdRef.current));
     applyFlowSelectionStyle(map);
-  }, [applyFlowSelectionStyle, flowTilesReady, showFlowInterpretation, tileDirection, useTileLayers]);
+  }, [applyFlowSelectionStyle, flowTilesReady, showFlowAnimation, showFlowInterpretation, tileDirection, useTileLayers]);
 
   const applyVectorZonesData = useCallback((map: maplibregl.Map) => {
     const src = map.getSource("vector-zones") as maplibregl.GeoJSONSource | undefined;
@@ -736,7 +760,9 @@ export function MapView({
     });
 
     mapRef.current = map;
+    setMapInstance(map);
     return () => {
+      setMapInstance(null);
       styleWaitBoundRef.current = false;
       map.remove();
       mapRef.current = null;
@@ -777,6 +803,13 @@ export function MapView({
   }, [syncTileMode]);
 
   useEffect(() => {
+    runWhenMapReady(() => {
+      const map = mapRef.current;
+      if (map) applyWindExposureVisibility(map);
+    });
+  }, [applyWindExposureVisibility, runWhenMapReady, showWindExposure]);
+
+  useEffect(() => {
     if (selectedId == null) return;
     runWhenMapReady(() => {
       const map = mapRef.current;
@@ -788,7 +821,18 @@ export function MapView({
     });
   }, [runWhenMapReady, selectedId, results]);
 
-  return <div ref={containerRef} className="map-container" />;
+  return (
+    <div className="map-stack">
+      <div ref={containerRef} className="map-container" />
+      <FlowAnimationCanvas
+        map={mapInstance}
+        active={showFlowAnimation}
+        windDirectionDeg={windDirectionDeg}
+        flowIndicators={flowIndicators}
+        dimExposure={!showWindExposure}
+      />
+    </div>
+  );
 }
 
 function centroidOf(geom: GeoJSON.Geometry): [number, number] {
