@@ -1,5 +1,5 @@
 .DS_Store
-data/wind_track.db
-data/wind_track.db-*
-data/tiles/
-data/overpass_cache/
+
+# Local product data (DB, tiles, imports, caches)
+data/*
+!data/.gitkeep
