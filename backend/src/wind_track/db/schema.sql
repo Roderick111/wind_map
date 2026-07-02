@@ -263,6 +263,31 @@ CREATE TABLE IF NOT EXISTS validation_metrics (
     metrics_json TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS flow_path_nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    area_id INTEGER NOT NULL REFERENCES areas(id),
+    geom TEXT NOT NULL,
+    node_type TEXT NOT NULL DEFAULT 'intersection',
+    connected_path_ids_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS flow_paths (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    area_id INTEGER NOT NULL REFERENCES areas(id),
+    source_feature_ids_json TEXT NOT NULL DEFAULT '[]',
+    path_type TEXT NOT NULL,
+    name TEXT,
+    geom TEXT NOT NULL,
+    length_m REAL NOT NULL,
+    bearing_deg REAL NOT NULL,
+    from_node_id INTEGER REFERENCES flow_path_nodes(id),
+    to_node_id INTEGER REFERENCES flow_path_nodes(id),
+    confidence REAL NOT NULL DEFAULT 0.7,
+    animate INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     version TEXT NOT NULL UNIQUE,
@@ -275,3 +300,5 @@ CREATE INDEX IF NOT EXISTS idx_scalar_results_scenario ON scalar_results(scenari
 CREATE INDEX IF NOT EXISTS idx_directional_cache_lookup ON directional_score_cache(
     area_id, data_version_id, model_version_id, direction_deg
 );
+CREATE INDEX IF NOT EXISTS idx_flow_paths_area ON flow_paths(area_id);
+CREATE INDEX IF NOT EXISTS idx_flow_path_nodes_area ON flow_path_nodes(area_id);

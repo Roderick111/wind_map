@@ -92,6 +92,22 @@ export const DataQualitySchema = z.object({
   low_confidence_count: z.number(),
 }).strict();
 
+export const FlowPathSchema = z.object({
+  flow_path_id: z.number(),
+  source_feature_ids: z.array(z.number()),
+  path_type: z.string(),
+  name: z.string().nullable(),
+  geom: z.record(z.string(), z.unknown()),
+  length_m: z.number(),
+  bearing_deg: z.number(),
+  confidence: z.number(),
+  flow_direction_deg: z.number(),
+  flow_strength: z.number(),
+  meteor_density: z.number(),
+  animate: z.boolean(),
+  reason: z.string(),
+}).strict();
+
 export const FlowIndicatorSchema = z.object({
   feature_id: z.number(),
   indicator_type: z.string(),
@@ -106,6 +122,7 @@ export const FlowIndicatorSchema = z.object({
 }).strict();
 
 export type TileManifest = z.infer<typeof TileManifestSchema>;
+export type FlowPath = z.infer<typeof FlowPathSchema>;
 export type FlowIndicator = z.infer<typeof FlowIndicatorSchema>;
 export type Area = z.infer<typeof AreaSchema>;
 export type DataQuality = z.infer<typeof DataQualitySchema>;

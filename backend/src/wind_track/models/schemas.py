@@ -149,3 +149,19 @@ class FlowIndicatorResponse(BaseModel):
     reason: str
     source: str
     feature_type: str
+
+
+class FlowPathResponse(BaseModel):
+    flow_path_id: int
+    source_feature_ids: list[int]
+    path_type: str
+    name: str | None
+    geom: dict[str, Any]
+    length_m: float
+    bearing_deg: float
+    confidence: float
+    flow_direction_deg: float
+    flow_strength: float
+    meteor_density: float
+    animate: bool
+    reason: str

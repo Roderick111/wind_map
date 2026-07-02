@@ -15,6 +15,7 @@ from wind_track.models.schemas import (
     TileManifestResponse,
     FeatureResultResponse,
     FlowIndicatorResponse,
+    FlowPathResponse,
     FeedbackRequest,
     FeedbackResponse,
     HealthResponse,
@@ -27,6 +28,7 @@ from wind_track.models.schemas import (
 )
 from wind_track.services.directional_cache import cache_status, get_cached_exposure
 from wind_track.services.flow_indicators import get_flow_indicators
+from wind_track.services.flow_paths import flow_paths_ready, get_flow_paths
 from wind_track.services.tiles.generate import tile_manifest
 from wind_track.services.precompute import precompute_directions
 from wind_track.services.validation.run import run_validation_case, seed_presquile_validation_case
@@ -96,6 +98,7 @@ async def area_summary(area_id: int) -> dict[str, Any]:
         slug = area_row["slug"] if area_row else ""
         cache = await cache_status(slug) if slug else {"ready": False}
         tiles = tile_manifest(slug) if slug else {"ready": False}
+        paths_ready = await flow_paths_ready(slug) if slug else False
         return {
             "area_id": area_id,
             "feature_count": sum(by_type.values()),
@@ -108,6 +111,7 @@ async def area_summary(area_id: int) -> dict[str, Any]:
             "cache_entries": cache.get("entry_count", 0),
             "tiles_ready": tiles.get("ready", False),
             "direction_count": cache.get("direction_count", 0),
+            "flow_paths_ready": paths_ready,
         }
 
 
@@ -169,6 +173,39 @@ async def area_flow_indicators(
                 "Directional cache not ready — run: make precompute-directions",
             )
     return [FlowIndicatorResponse(**ind) for ind in indicators]
+
+
+@router.get("/areas/{area_slug}/flow-paths", response_model=list[FlowPathResponse])
+async def area_flow_paths(
+    area_slug: str,
+    direction_deg: float = Query(..., ge=0, lt=360),
+    wind_speed_ms: float = Query(8.0, ge=0, le=40),
+    wind_gust_ms: float | None = Query(None, ge=0, le=60),
+    bbox: str | None = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
+) -> list[FlowPathResponse]:
+    """Normalized street flow paths with per-scenario meteor parameters."""
+    parsed_bbox = None
+    if bbox:
+        parts = [float(x.strip()) for x in bbox.split(",")]
+        if len(parts) == 4:
+            parsed_bbox = (parts[0], parts[1], parts[2], parts[3])
+    paths = await get_flow_paths(
+        area_slug, direction_deg, wind_speed_ms, wind_gust_ms, parsed_bbox,
+    )
+    if not paths:
+        if not await flow_paths_ready(area_slug):
+            raise HTTPException(
+                404,
+                f"Flow paths not built for {area_slug} — run: "
+                f"make build-flow-paths AREA={area_slug}",
+            )
+        status = await cache_status(area_slug)
+        if not status.get("ready"):
+            raise HTTPException(
+                404,
+                "Directional cache not ready — run: make precompute-directions",
+            )
+    return [FlowPathResponse(**row) for row in paths]
 
 
 @router.get("/areas/{area_slug}/cache-status")

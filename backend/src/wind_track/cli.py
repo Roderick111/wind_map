@@ -10,6 +10,7 @@ from wind_track.config.settings import direction_set
 from wind_track.db.connection import fetch_one, get_db
 from wind_track.db.migrate import run_migrations
 from wind_track.services.enrich_heights import enrich_building_heights
+from wind_track.services.flow_paths import build_flow_paths
 from wind_track.services.import_osm import import_osm_area
 from wind_track.services.metrics.batch import compute_metrics_for_area
 from wind_track.services.pipeline import run_area_pipeline
@@ -113,6 +114,15 @@ def generate_tiles() -> None:
     dirs = direction_set(dir_count)
     result = asyncio.run(generate_area_tiles(area, directions=dirs))
     print(json.dumps(result, indent=2))
+
+
+def build_flow_paths_cmd() -> None:
+    from wind_track.services.progress import log_step
+
+    area = sys.argv[1] if len(sys.argv) > 1 else "pilot_presquile"
+    log_step("wind-track-build-flow-paths", area=area, hint="progress on stderr; JSON on stdout")
+    result = asyncio.run(build_flow_paths(area))
+    print(json.dumps(result, indent=2), flush=True)
 
 
 def import_dem() -> None:

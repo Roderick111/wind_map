@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
-import type { FeatureResult } from "../api/schemas";
-import { confidenceOpacity, exposureColor } from "../lib/exposure";
+import type { FeatureResult, FlowPath } from "../api/schemas";
+import { flowPathsToGeoJSON } from "../lib/flowPaths";
+import { confidenceOpacity, riskScoreColor } from "../lib/exposure";
 import { ensurePmtilesProtocol, EXPOSURE_COLOR_EXPR, pmtilesUrl } from "../lib/pmtiles";
 import type { MapViewMode } from "./LayerMenu";
 import { StreetWindFlow } from "./StreetWindFlow";
@@ -12,7 +13,7 @@ type Props = {
   areaSlug: string | null;
   results: FeatureResult[];
   mapViewMode: MapViewMode;
-  windDirectionDeg: number;
+  flowPaths: FlowPath[];
   showLabels: boolean;
   useTileLayers: boolean;
   tileDirection: number | null;
@@ -27,6 +28,7 @@ const GEOJSON_EXPOSURE_LAYERS = [
 const GEOJSON_LABEL_LAYERS = ["exposure-labels", "exposure-labels-poly"];
 const EXPOSURE_TILE_FILL_LAYERS = ["exposure-pmtiles-fill"];
 const EXPOSURE_TILE_LINE_LAYERS = ["exposure-pmtiles-line"];
+const FLOW_PATH_LAYERS = ["flow-path-line"];
 
 function featureLabel(r: FeatureResult): string {
   const name = r.name?.trim();
@@ -86,7 +88,7 @@ function resultsToGeoJSON(
           feature_id: r.feature_id,
           exposure_class: r.exposure_class,
           risk_score: r.risk_score,
-          color: exposureColor(r.exposure_class),
+          color: riskScoreColor(r.risk_score),
           opacity: confidenceOpacity(r.confidence),
           handling_mode: r.handling_mode,
           name: r.name,
@@ -154,7 +156,7 @@ export function MapView({
   areaSlug,
   results,
   mapViewMode,
-  windDirectionDeg,
+  flowPaths,
   showLabels,
   useTileLayers,
   tileDirection,
@@ -167,6 +169,8 @@ export function MapView({
   const [mapInstance, setMapInstance] = useState<maplibregl.Map | null>(null);
   const mapViewModeRef = useRef(mapViewMode);
   mapViewModeRef.current = mapViewMode;
+  const flowPathsRef = useRef(flowPaths);
+  flowPathsRef.current = flowPaths;
   const resultsRef = useRef(results);
   const onSelectRef = useRef(onSelect);
   const tileClickRef = useRef<(
@@ -179,11 +183,13 @@ export function MapView({
   const performSyncTileModeRef = useRef<(map: maplibregl.Map) => void>(() => {});
   const applyExposureDataRef = useRef<(map: maplibregl.Map) => void>(() => {});
   const applyMapViewModeRef = useRef<(map: maplibregl.Map) => void>(() => {});
+  const applyFlowPathDataRef = useRef<(map: maplibregl.Map) => void>(() => {});
   resultsRef.current = results;
   onSelectRef.current = onSelect;
 
   const flushMapState = useCallback((map: maplibregl.Map) => {
     applyExposureDataRef.current(map);
+    applyFlowPathDataRef.current(map);
     performSyncTileModeRef.current(map);
     applyMapViewModeRef.current(map);
   }, []);
@@ -305,11 +311,19 @@ export function MapView({
     const mode = mapViewModeRef.current;
     const exposureOn = mode === "exposure";
     const flowOn = mode === "flow";
+    const hasFlowPaths = flowPathsRef.current.length > 0;
+    const showExposureLines = !flowOn || !hasFlowPaths;
 
-    setLayerVisibility(map, GEOJSON_EXPOSURE_LAYERS, !useTileLayers && (exposureOn || flowOn));
+    setLayerVisibility(
+      map,
+      GEOJSON_EXPOSURE_LAYERS.filter((id) => id !== "exposure-line"),
+      !useTileLayers && (exposureOn || (flowOn && !hasFlowPaths)),
+    );
+    setLayerVisibility(map, ["exposure-line"], !useTileLayers && showExposureLines && (exposureOn || flowOn));
     setLayerVisibility(map, GEOJSON_LABEL_LAYERS, showLabels && (exposureOn || flowOn));
     setLayerVisibility(map, EXPOSURE_TILE_FILL_LAYERS, useTileLayers && exposureOn);
-    setLayerVisibility(map, EXPOSURE_TILE_LINE_LAYERS, useTileLayers && (exposureOn || flowOn));
+    setLayerVisibility(map, EXPOSURE_TILE_LINE_LAYERS, useTileLayers && showExposureLines && (exposureOn || flowOn));
+    setLayerVisibility(map, FLOW_PATH_LAYERS, false);
 
     if (map.getLayer("exposure-line")) {
       map.setPaintProperty(
@@ -351,6 +365,7 @@ export function MapView({
       removeAllPmtiles(map);
       exposureDirRef.current = null;
       applyMapViewModeRef.current(map);
+      applyFlowPathDataRef.current(map);
       return;
     }
 
@@ -374,6 +389,7 @@ export function MapView({
     }
 
     applyMapViewModeRef.current(map);
+    applyFlowPathDataRef.current(map);
   }, [
     addExposureTileLayers,
     applyExposureTileStyle,
@@ -390,9 +406,20 @@ export function MapView({
     src.setData(resultsToGeoJSON(resultsRef.current, showLabels));
   }, [showLabels]);
 
+  const applyFlowPathData = useCallback((map: maplibregl.Map) => {
+    const src = map.getSource("flow-paths") as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+    src.setData(flowPathsToGeoJSON(flowPathsRef.current));
+    applyMapViewModeRef.current(map);
+    if (map.getLayer("flow-path-line") && flowPathsRef.current.length > 0) {
+      map.moveLayer("flow-path-line");
+    }
+  }, []);
+
   performSyncTileModeRef.current = performSyncTileMode;
   applyExposureDataRef.current = applyExposureData;
   applyMapViewModeRef.current = applyMapViewMode;
+  applyFlowPathDataRef.current = applyFlowPathData;
 
   const syncTileMode = useCallback(() => {
     runWhenMapReady(() => {
@@ -497,6 +524,21 @@ export function MapView({
           "text-halo-width": 1.2,
         },
       });
+      map.addSource("flow-paths", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: "flow-path-line",
+        type: "line",
+        source: "flow-paths",
+        layout: { visibility: "none" },
+        paint: {
+          "line-color": "#60a5fa",
+          "line-width": 1.4,
+          "line-opacity": 0.28,
+        },
+      });
       map.addLayer({
         id: "exposure-labels-poly",
         type: "symbol",
@@ -536,6 +578,13 @@ export function MapView({
   }, [results, applyExposure]);
 
   useEffect(() => {
+    runWhenMapReady(() => {
+      const map = mapRef.current;
+      if (map) applyFlowPathData(map);
+    });
+  }, [applyFlowPathData, flowPaths, runWhenMapReady]);
+
+  useEffect(() => {
     syncTileMode();
   }, [syncTileMode]);
 
@@ -545,6 +594,18 @@ export function MapView({
       if (map) applyMapViewMode(map);
     });
   }, [applyMapViewMode, mapViewMode, runWhenMapReady, showLabels]);
+
+  useEffect(() => {
+    const map = mapInstance;
+    if (!map) return;
+    const onViewChange = () => applyMapViewMode(map);
+    map.on("zoom", onViewChange);
+    map.on("move", onViewChange);
+    return () => {
+      map.off("zoom", onViewChange);
+      map.off("move", onViewChange);
+    };
+  }, [applyMapViewMode, mapInstance]);
 
   useEffect(() => {
     if (selectedId == null) return;
@@ -564,9 +625,7 @@ export function MapView({
       <StreetWindFlow
         map={mapInstance}
         active={mapViewMode === "flow"}
-        results={results}
-        windDirectionDeg={windDirectionDeg}
-        useTileLayers={useTileLayers}
+        flowPaths={flowPaths}
       />
     </div>
   );

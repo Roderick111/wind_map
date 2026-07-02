@@ -1,7 +1,4 @@
-import { exposureColor, formatExposureClass } from "../lib/exposure";
 import type { MapViewMode } from "./LayerMenu";
-
-const CLASSES = ["low", "medium", "high", "very_high"] as const;
 
 type Props = {
   mapViewMode: MapViewMode;
@@ -11,17 +8,11 @@ export function Legend({ mapViewMode }: Props) {
   if (mapViewMode === "flow") {
     return (
       <div className="legend">
-        <h3>Flow on streets</h3>
-        <p className="legend-hint">Soft streaks drift along street centerlines in the wind-aligned direction.</p>
-        <ul>
-          {CLASSES.map((cls) => (
-            <li key={cls}>
-              <span className="legend-swatch" style={{ background: exposureColor(cls) }} />
-              {formatExposureClass(cls)} corridor
-            </li>
-          ))}
-        </ul>
-        <p className="legend-hint">Click a street, quay, bridge, or square for details.</p>
+        <h3>Wind flow</h3>
+        <p className="legend-hint">
+          Zoom in to street level to see meteors along each path. At city zoom the map stays clean.
+        </p>
+        <p className="legend-hint">Click a street, quay, bridge, or square for exposure details.</p>
       </div>
     );
   }
@@ -30,7 +21,7 @@ export function Legend({ mapViewMode }: Props) {
     return (
       <div className="legend">
         <h3>Base map</h3>
-        <p className="legend-hint">Pick Exposure colors or Flow on streets to see wind screening.</p>
+        <p className="legend-hint">Pick Exposure colors or Wind flow to see wind screening.</p>
       </div>
     );
   }
@@ -38,15 +29,12 @@ export function Legend({ mapViewMode }: Props) {
   return (
     <div className="legend">
       <h3>Wind exposure</h3>
-      <p className="legend-hint">Colors = estimated exposure class for current wind</p>
-      <ul>
-        {CLASSES.map((cls) => (
-          <li key={cls}>
-            <span className="legend-swatch" style={{ background: exposureColor(cls) }} />
-            {formatExposureClass(cls)}
-          </li>
-        ))}
-      </ul>
+      <p className="legend-hint">Color scale = estimated exposure score (0–100) for current wind</p>
+      <div className="legend-gradient" aria-hidden />
+      <div className="legend-gradient-labels">
+        <span>Lower</span>
+        <span>Higher</span>
+      </div>
       <p className="legend-hint">Click a street, quay, bridge, or square for details.</p>
     </div>
   );

@@ -1,5 +1,5 @@
 import type { FeatureResult } from "../api/schemas";
-import { exposureColor, formatExposureClass } from "../lib/exposure";
+import { formatExposureClass, riskScoreColor } from "../lib/exposure";
 import { likelyFlowSummary } from "../lib/flowInterpretation";
 
 type Props = {
@@ -21,7 +21,7 @@ export function ExplanationPanel({ feature, windDirectionDeg, onClose, onReport 
       </header>
       <div
         className="exposure-badge"
-        style={{ background: exposureColor(feature.exposure_class) }}
+        style={{ background: riskScoreColor(feature.risk_score) }}
       >
         {formatExposureClass(feature.exposure_class)} — {feature.risk_score.toFixed(0)}/100
       </div>

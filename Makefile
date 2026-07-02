@@ -1,4 +1,4 @@
-.PHONY: dev test setup db-migrate seed import-osm import-dem enrich-heights validate compute-metrics precompute-directions generate-tiles audit pipeline backend frontend
+.PHONY: dev test setup db-migrate seed import-osm import-dem enrich-heights validate compute-metrics precompute-directions build-flow-paths generate-tiles audit pipeline backend frontend
 
 # One-time (or after schema change): migrate + import OSM if missing
 setup:
@@ -32,6 +32,9 @@ compute-metrics:
 
 precompute-directions:
 	cd backend && uv run wind-track-precompute $(or $(AREA),pilot_presquile) --directions $(or $(DIRECTIONS),8)
+
+build-flow-paths:
+	cd backend && PYTHONUNBUFFERED=1 uv run wind-track-build-flow-paths $(or $(AREA),pilot_presquile)
 
 enrich-heights:
 	cd backend && uv run wind-track-enrich-heights $(or $(AREA),pilot_presquile)

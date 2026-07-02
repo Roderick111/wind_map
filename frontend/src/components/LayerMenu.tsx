@@ -32,7 +32,7 @@ export function LayerMenu({
           checked={mapViewMode === "flow"}
           onChange={() => onMapViewModeChange("flow")}
         />
-        Flow on streets
+        Wind flow
       </label>
       <label>
         <input
@@ -49,7 +49,7 @@ export function LayerMenu({
         Street labels
       </label>
       <p className="layer-note">
-        Flow view replaces colors with smooth streaks moving along streets. Screening estimate — not CFD.
+        Wind flow shows meteors at street zoom only. Zoom in to see movement along each path. Screening estimate — not CFD.
       </p>
     </div>
   );

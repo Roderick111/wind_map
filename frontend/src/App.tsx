@@ -4,6 +4,7 @@ import {
   getAreaSummary,
   getAreas,
   getCachedExposure,
+  getFlowPaths,
   getTileManifest,
   getCurrentWeather,
   getForecastWeather,
@@ -18,7 +19,7 @@ import {
 import { filterMapResults } from "./lib/mapFeatures";
 import { canUseTileMode, tileDirectionsFromManifest } from "./lib/tiles";
 import { normalizeDirectionDeg, roundSpeedMs, snapDirection } from "./lib/wind";
-import type { Area, DataQuality, FeatureResult, TileManifest, Weather } from "./api/schemas";
+import type { Area, DataQuality, FeatureResult, FlowPath, TileManifest, Weather } from "./api/schemas";
 import { DataQualityPanel } from "./components/DataQualityPanel";
 import { ValidationPanel } from "./components/ValidationPanel";
 import { ExplanationPanel } from "./components/ExplanationPanel";
@@ -48,6 +49,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>("map");
   const [mapViewMode, setMapViewMode] = useState<MapViewMode>("exposure");
+  const [flowPaths, setFlowPaths] = useState<FlowPath[]>([]);
   const [showLabels, setShowLabels] = useState(true);
   const [areaMetaReady, setAreaMetaReady] = useState(false);
   const [quality, setQuality] = useState<DataQuality | null>(null);
@@ -55,6 +57,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [needsImport, setNeedsImport] = useState(false);
   const [cacheReady, setCacheReady] = useState(false);
+
   const [tilesReady, setTilesReady] = useState(false);
   const [tileManifest, setTileManifest] = useState<TileManifest | null>(null);
   const [useTileLayers, setUseTileLayers] = useState(false);
@@ -346,6 +349,41 @@ export default function App() {
     void loadExposure(mode === "manual" ? "manual" : mode, forecastHour, false);
   }, [cacheReady, areaMetaReady]); // eslint-disable-line react-hooks/exhaustive-deps -- reload once when cache becomes ready
 
+  useEffect(() => {
+    if (!area || mapViewMode !== "flow") {
+      setFlowPaths([]);
+      return;
+    }
+    let cancelled = false;
+    setError(null);
+    void getFlowPaths(area.slug, direction, speed, windGustMs)
+      .then((paths) => {
+        if (cancelled) return;
+        setFlowPaths(paths);
+        if (!cacheReady) {
+          setError(
+            "Exposure cache missing — showing geometry-based flow. "
+            + "Run: make precompute-directions AREA=" + area.slug,
+          );
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setFlowPaths([]);
+          const msg = String(e);
+          if (msg.includes("Flow paths not built")) {
+            setError(
+              `Wind flow paths are not built for ${area.name} (${area.slug}). `
+              + `Run: make build-flow-paths AREA=${area.slug}`,
+            );
+          } else {
+            setError(msg);
+          }
+        }
+      });
+    return () => { cancelled = true; };
+  }, [area, mapViewMode, cacheReady, direction, speed, windGustMs]);
+
   const handleRunValidation = async () => {
     if (!area) return;
     setValidationLoading(true);
@@ -495,7 +533,7 @@ export default function App() {
             areaSlug={area.slug}
             results={filterMapResults(results)}
             mapViewMode={mapViewMode}
-            windDirectionDeg={direction}
+            flowPaths={flowPaths}
             showLabels={showLabels}
             useTileLayers={useTileLayers}
             tileDirection={tileDirection}

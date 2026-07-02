@@ -4,11 +4,12 @@ import {
   TileManifestSchema,
   FeatureResultSchema,
   FlowIndicatorSchema,
+  FlowPathSchema,
   ScenarioSchema,
   WeatherSchema,
 } from "./schemas";
 import { normalizeDirectionDeg } from "../lib/wind";
-import type { Area, DataQuality, FeatureResult, FlowIndicator, Scenario, TileManifest, Weather } from "./schemas";
+import type { Area, DataQuality, FeatureResult, FlowIndicator, FlowPath, Scenario, TileManifest, Weather } from "./schemas";
 
 const BASE = "/api";
 
@@ -31,6 +32,7 @@ export async function getAreaSummary(areaId: number): Promise<{
   cache_entries: number;
   tiles_ready?: boolean;
   direction_count?: number;
+  flow_paths_ready?: boolean;
 }> {
   return fetchJson(`${BASE}/areas/${areaId}/summary`);
 }
@@ -38,6 +40,23 @@ export async function getAreaSummary(areaId: number): Promise<{
 export async function getTileManifest(areaSlug: string): Promise<TileManifest> {
   const data = await fetchJson<unknown>(`${BASE}/areas/${areaSlug}/tiles`);
   return TileManifestSchema.parse(data);
+}
+
+export async function getFlowPaths(
+  areaSlug: string,
+  directionDeg: number,
+  windSpeedMs: number,
+  windGustMs?: number | null,
+): Promise<FlowPath[]> {
+  const params = new URLSearchParams({
+    direction_deg: String(normalizeDirectionDeg(directionDeg)),
+    wind_speed_ms: String(windSpeedMs),
+  });
+  if (windGustMs != null && windGustMs > 0) {
+    params.set("wind_gust_ms", String(windGustMs));
+  }
+  const data = await fetchJson<unknown[]>(`${BASE}/areas/${areaSlug}/flow-paths?${params}`);
+  return data.map((row) => FlowPathSchema.parse(row));
 }
 
 export async function getFlowIndicators(

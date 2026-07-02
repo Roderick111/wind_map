@@ -1,259 +1,218 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import type maplibregl from "maplibre-gl";
-import type { FeatureResult } from "../api/schemas";
+import type { FlowPath } from "../api/schemas";
 import {
-  type StreetSegment,
-  sampleAlongSegment,
-  segmentsFromResults,
-  streakLengthM,
-  windForward,
-} from "../lib/streetFlow";
-import { exposureColor } from "../lib/exposure";
+  boundsOverlap,
+  buildPathCache,
+  buildViewportParticles,
+  METEOR_MIN_ZOOM,
+  meteorDrawStyle,
+  normalizeStreakPixels,
+  meteorOpacity,
+  meteorSegment,
+  meteorSpeedMps,
+  type FlowParticle,
+  type PathCache,
+} from "../lib/flowPaths";
 
 type Props = {
   map: maplibregl.Map | null;
   active: boolean;
-  results: FeatureResult[];
-  windDirectionDeg: number;
-  useTileLayers: boolean;
+  flowPaths: FlowPath[];
 };
 
-type Particle = {
-  segmentIndex: number;
-  distanceM: number;
-  phase: number;
-};
-
-const STREET_TILE_LAYER = "exposure-pmtiles-line";
-const MAX_PARTICLES = 1400;
-
-function mapStyleReady(map: maplibregl.Map | null): boolean {
-  if (!map) return false;
+function mapReady(map: maplibregl.Map): boolean {
   try {
-    return Boolean(map.isStyleLoaded());
+    return Boolean(map.isStyleLoaded()) && map.getContainer().clientWidth > 0;
   } catch {
     return false;
   }
 }
 
-function hexToRgba(hex: string, alpha: number): string {
-  const h = hex.replace("#", "");
-  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  const n = Number.parseInt(full, 16);
-  const r = (n >> 16) & 255;
-  const g = (n >> 8) & 255;
-  const b = n & 255;
-  return `rgba(${r},${g},${b},${alpha})`;
+function viewportFromMap(map: maplibregl.Map) {
+  const bounds = map.getBounds();
+  return {
+    west: bounds.getWest(),
+    south: bounds.getSouth(),
+    east: bounds.getEast(),
+    north: bounds.getNorth(),
+  };
 }
 
-function segmentsFromTileFeatures(
-  map: maplibregl.Map,
-  windDirectionDeg: number,
-): StreetSegment[] {
-  if (!mapStyleReady(map)) return [];
-  try {
-    if (!map.getLayer(STREET_TILE_LAYER)) return [];
-    const rendered = map.queryRenderedFeatures({ layers: [STREET_TILE_LAYER] });
-    const segments: StreetSegment[] = [];
-    for (const feat of rendered) {
-      if (feat.geometry.type !== "LineString") continue;
-      const ftype = String(feat.properties?.feature_type ?? "");
-      if (!["street_segment", "quay", "bridge"].includes(ftype)) continue;
-      const risk = Number(feat.properties?.risk_score ?? 0);
-      if (risk < 35) continue;
-      const coords = feat.geometry.coordinates as [number, number][];
-      if (coords.length < 2) continue;
-      segments.push({
-        coords,
-        color: exposureColor(String(feat.properties?.exposure_class ?? "medium")),
-        speed: 12 + risk * 0.35,
-        forward: windForward(coords, windDirectionDeg),
-      });
-      if (segments.length >= 900) break;
-    }
-    return segments;
-  } catch {
-    return [];
-  }
-}
-
-function buildParticles(segments: StreetSegment[]): Particle[] {
-  const particles: Particle[] = [];
-  if (segments.length === 0) return particles;
-  const perSeg = Math.max(1, Math.floor(MAX_PARTICLES / segments.length));
-  for (let si = 0; si < segments.length; si += 1) {
-    for (let i = 0; i < perSeg; i += 1) {
-      particles.push({
-        segmentIndex: si,
-        distanceM: Math.random() * 120,
-        phase: Math.random(),
-      });
-    }
-  }
-  return particles.slice(0, MAX_PARTICLES);
-}
-
-export function StreetWindFlow({
-  map,
-  active,
-  results,
-  windDirectionDeg,
-  useTileLayers,
-}: Props) {
+export function StreetWindFlow({ map, active, flowPaths }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const segmentsRef = useRef<StreetSegment[]>([]);
-  const particlesRef = useRef<Particle[]>([]);
+  const particlesRef = useRef<FlowParticle[]>([]);
+  const pathCacheRef = useRef<PathCache[]>([]);
+  const pathsRef = useRef(flowPaths);
+  const activeRef = useRef(active);
+  const zoomRef = useRef(0);
   const rafRef = useRef(0);
   const lastTsRef = useRef(0);
-  const resultsRef = useRef(results);
-  const windRef = useRef(windDirectionDeg);
-  const useTileLayersRef = useRef(useTileLayers);
-  resultsRef.current = results;
-  windRef.current = windDirectionDeg;
-  useTileLayersRef.current = useTileLayers;
 
-  const refreshSegments = useCallback(() => {
-    if (!map || !mapStyleReady(map)) {
-      segmentsRef.current = [];
+  const rebuildParticles = (targetMap: maplibregl.Map) => {
+    const zoom = targetMap.getZoom();
+    if (zoom < METEOR_MIN_ZOOM) {
       particlesRef.current = [];
       return;
     }
-
-    let segments: StreetSegment[] = [];
-    const fromResults = () => segmentsFromResults(resultsRef.current, windRef.current);
-
-    if (useTileLayersRef.current) {
-      segments = segmentsFromTileFeatures(map, windRef.current);
-      if (segments.length === 0) {
-        segments = fromResults();
-      }
-    } else {
-      segments = fromResults();
-    }
-
-    segmentsRef.current = segments;
-    particlesRef.current = buildParticles(segments);
-  }, [map]);
+    particlesRef.current = buildViewportParticles(
+      pathsRef.current,
+      pathCacheRef.current,
+      viewportFromMap(targetMap),
+      zoom,
+    );
+  };
 
   useEffect(() => {
-    if (!active || !map || !canvasRef.current) return;
+    pathsRef.current = flowPaths;
+    activeRef.current = active;
+    pathCacheRef.current = buildPathCache(flowPaths);
+    if (map) rebuildParticles(map);
+    else particlesRef.current = [];
+  }, [active, flowPaths, map]);
 
+  useEffect(() => {
     const canvas = canvasRef.current;
+    if (!map || !canvas) return;
+
+    const container = map.getContainer();
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
     const resize = () => {
-      if (!mapStyleReady(map)) return;
-      const rect = map.getContainer().getBoundingClientRect();
-      canvas.width = rect.width * devicePixelRatio;
-      canvas.height = rect.height * devicePixelRatio;
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
-      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-      refreshSegments();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
 
-    const onMapReady = () => {
-      resize();
-      refreshSegments();
+    const syncZoom = () => {
+      zoomRef.current = map.getZoom();
     };
 
-    if (mapStyleReady(map)) {
-      resize();
-    } else {
-      map.once("load", onMapReady);
-      map.once("styledata", onMapReady);
-    }
+    const syncView = () => {
+      syncZoom();
+      rebuildParticles(map);
+    };
 
+    resize();
+    syncView();
     map.on("resize", resize);
-    map.on("moveend", refreshSegments);
-    map.on("zoomend", refreshSegments);
-    map.on("idle", refreshSegments);
+    map.on("zoom", syncZoom);
+    map.on("zoomend", syncView);
+    map.on("moveend", syncView);
 
     const draw = (ts: number) => {
-      if (!mapStyleReady(map)) {
+      const rect = container.getBoundingClientRect();
+      const zoom = map.getZoom();
+      zoomRef.current = zoom;
+      if (!activeRef.current || !mapReady(map) || zoom < METEOR_MIN_ZOOM) {
+        ctx.clearRect(0, 0, rect.width, rect.height);
+        rafRef.current = requestAnimationFrame(draw);
+        return;
+      }
+
+      const allPaths = pathsRef.current;
+      if (particlesRef.current.length === 0) {
+        ctx.clearRect(0, 0, rect.width, rect.height);
         rafRef.current = requestAnimationFrame(draw);
         return;
       }
 
       const dt = lastTsRef.current ? Math.min(0.05, (ts - lastTsRef.current) / 1000) : 0.016;
       lastTsRef.current = ts;
-
-      const rect = map.getContainer().getBoundingClientRect();
       ctx.clearRect(0, 0, rect.width, rect.height);
-      ctx.fillStyle = "rgba(15, 23, 42, 0.08)";
-      ctx.fillRect(0, 0, rect.width, rect.height);
 
-      const segments = segmentsRef.current;
-      const particles = particlesRef.current;
-      const zoom = map.getZoom();
+      const viewport = viewportFromMap(map);
+      const caches = pathCacheRef.current;
+      const drawStyle = meteorDrawStyle(zoom);
 
-      for (const p of particles) {
-        const seg = segments[p.segmentIndex];
-        if (!seg) continue;
+      for (const particle of particlesRef.current) {
+        const path = allPaths[particle.pathIndex];
+        if (!path?.animate) continue;
 
-        p.distanceM += seg.speed * dt * seg.forward;
-        if (p.distanceM < 0) p.distanceM += 500;
-        if (p.distanceM > 500) p.distanceM -= 500;
+        const cache = caches[particle.pathIndex];
+        if (cache?.bounds && !boundsOverlap(
+          cache.bounds,
+          viewport.west,
+          viewport.south,
+          viewport.east,
+          viewport.north,
+        )) {
+          continue;
+        }
 
-        const head = sampleAlongSegment(seg.coords, p.distanceM, seg.forward);
-        if (!head) continue;
-        const tailDist = p.distanceM - streakLengthM(zoom, seg.speed) * seg.forward;
-        const tail = sampleAlongSegment(seg.coords, tailDist, seg.forward);
-        if (!tail) continue;
+        const total = cache?.totalM ?? path.length_m;
+        if (total <= 0) continue;
 
-        const h = map.project([head.lng, head.lat]);
-        const t = map.project([tail.lng, tail.lat]);
+        particle.progress += (meteorSpeedMps(path) * dt) / total;
+        if (particle.progress >= 1) particle.progress -= 1;
+
+        const segment = meteorSegment(path, particle.progress);
+        if (!segment) continue;
+
+        const headPx = map.project([segment.head.lng, segment.head.lat]);
+        const tailPx = normalizeStreakPixels(
+          headPx,
+          map.project([segment.tail.lng, segment.tail.lat]),
+          drawStyle,
+          particle.phase,
+        );
+
         if (
-          h.x < -40 || h.y < -40 || h.x > rect.width + 40 || h.y > rect.height + 40
-        ) continue;
+          !Number.isFinite(headPx.x)
+          || !Number.isFinite(headPx.y)
+          || headPx.x < -24
+          || headPx.y < -24
+          || headPx.x > rect.width + 24
+          || headPx.y > rect.height + 24
+        ) {
+          continue;
+        }
 
-        const pulse = 0.45 + 0.35 * Math.sin(ts * 0.002 + p.phase * 6.28);
-        const grad = ctx.createLinearGradient(t.x, t.y, h.x, h.y);
-        grad.addColorStop(0, hexToRgba(seg.color, 0));
-        grad.addColorStop(0.35, hexToRgba(seg.color, 0.12 * pulse));
-        grad.addColorStop(1, hexToRgba(seg.color, 0.55 * pulse));
+        const shimmer = 0.92 + 0.08 * Math.sin(ts * 0.004 + particle.phase * 6.28);
+        const alpha = Math.min(1, meteorOpacity(path) * shimmer);
+        const grad = ctx.createLinearGradient(tailPx.x, tailPx.y, headPx.x, headPx.y);
+        grad.addColorStop(0, "rgba(230, 245, 255, 0)");
+        grad.addColorStop(0.35, `rgba(230, 245, 255, ${alpha * 0.25})`);
+        grad.addColorStop(0.75, `rgba(248, 252, 255, ${alpha * 0.75})`);
+        grad.addColorStop(1, `rgba(255, 255, 255, ${alpha})`);
 
-        ctx.strokeStyle = grad;
-        ctx.lineWidth = 2.2;
         ctx.lineCap = "round";
         ctx.beginPath();
-        ctx.moveTo(t.x, t.y);
-        ctx.lineTo(h.x, h.y);
+        ctx.moveTo(tailPx.x, tailPx.y);
+        ctx.lineTo(headPx.x, headPx.y);
+
+        ctx.strokeStyle = `rgba(186, 220, 255, ${alpha * 0.4})`;
+        ctx.lineWidth = drawStyle.lineWidth + drawStyle.haloWidth;
         ctx.stroke();
 
-        ctx.strokeStyle = hexToRgba("#e2e8f0", 0.18 * pulse);
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(t.x, t.y);
-        ctx.lineTo(h.x, h.y);
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = drawStyle.lineWidth;
         ctx.stroke();
       }
 
       rafRef.current = requestAnimationFrame(draw);
     };
 
-    refreshSegments();
     rafRef.current = requestAnimationFrame(draw);
 
     return () => {
       cancelAnimationFrame(rafRef.current);
       lastTsRef.current = 0;
-      map.off("load", onMapReady);
-      map.off("styledata", onMapReady);
       map.off("resize", resize);
-      map.off("moveend", refreshSegments);
-      map.off("zoomend", refreshSegments);
-      map.off("idle", refreshSegments);
+      map.off("zoom", syncZoom);
+      map.off("zoomend", syncView);
+      map.off("moveend", syncView);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
     };
-  }, [active, map, refreshSegments]);
+  }, [map, flowPaths, active]);
 
-  useEffect(() => {
-    if (!active || !map) return;
-    refreshSegments();
-  }, [active, map, results, windDirectionDeg, useTileLayers, refreshSegments]);
-
-  if (!active) return null;
+  if (!active || flowPaths.length === 0) return null;
 
   return <canvas ref={canvasRef} className="street-wind-canvas" aria-hidden />;
 }
